@@ -13,16 +13,15 @@
 </head>
 <body>
   <div class="app-container">
-    <!-- Sidebar / Navigation -->
     <nav class="sidebar">
       <div class="logo">MathMarker</div>
       <button onclick="showTab('upload')" class="nav-btn active">Upload</button>
       <button onclick="showTab('dashboard')" class="nav-btn">Dashboard</button>
       <button onclick="showTab('grading')" class="nav-btn">Grading</button>
     </nav>
-    <!-- Main Content -->
+
     <main class="content">
-      <!-- UPLOAD TAB -->
+      
       <div id="upload" class="tab-content active">
         <h2>Upload Exam Papers</h2>
         <div class="upload-card">
@@ -45,30 +44,27 @@
           <div id="uploadStatus"></div>
         </div>
       </div>
-      <!-- DASHBOARD TAB -->
+
       <div id="dashboard" class="tab-content">
         <h2>Uploaded Papers</h2>
         <button onclick="loadFiles()" class="secondary-btn">Refresh List</button>
         <div id="fileList" class="file-grid">
-          <!-- File items will be injected here -->
           <p>Loading...</p>
         </div>
       </div>
-      <!-- GRADING TAB -->
+
       <div id="grading" class="tab-content">
         <div class="grading-layout">
-          <!-- Left: PDF Viewer -->
           <div class="pdf-panel">
             <div class="panel-header">
               <span>Student Paper</span>
               <div class="pagination">
-                <!-- We use this to guide the teacher, though iframe might not sync perfectly -->
                 <span id="pageGuide">Pages 1-1</span>
               </div>
             </div>
             <iframe id="pdfFrame" src="" width="100%" height="100%"></iframe>
           </div>
-          <!-- Right: Grading Form -->
+
           <div class="grading-panel">
             <div class="panel-header">
               <span>Grading & Feedback</span>
@@ -78,21 +74,31 @@
                 <button onclick="nextStudent()" class="nav-sm">&gt;</button>
               </div>
             </div>
+
             <div class="ai-controls">
-              <div class="info-box">
-                <strong>Model:</strong> Gemini
+              <div class="info-box" style="display: flex; align-items: center; justify-content: center; gap: 10px;">
+                <label for="modelSelect"><strong>Model:</strong></label>
+                <select id="modelSelect" style="background: transparent; border: 1px solid #4f46e5; border-radius: 4px; padding: 4px; color: #3730a3; font-weight: bold; cursor: pointer;">
+                  <option value="Claude-Opus-4.5" selected>Claude Opus 4.5</option>
+                  <option value="Gemini-3-Pro">Gemini 3 Pro</option>
+                  <option value="GPT-5.1">GPT 5.1</option>
+                </select>
               </div>
+
               <div style="display: flex; gap: 5px; margin-bottom: 10px;">
                 <input type="number" id="totalStudents" placeholder="Total Students" value="1" min="1" style="flex: 1;">
                 <button onclick="gradeAll()" class="secondary-btn" style="flex: 1; margin: 0;">Grade All</button>
               </div>
+
               <button onclick="runAutoGrade()" class="magic-btn">✨ Grade Current Student</button>
               <div id="gradeStatus" class="status-msg"></div>
+
               <div class="export-controls" style="margin-top: 10px; display: flex; gap: 5px;">
                 <button onclick="downloadCsv()" class="nav-sm" style="flex: 1;">Download CSV</button>
                 <button onclick="downloadPdf()" class="nav-sm" style="flex: 1;">Download PDF</button>
               </div>
             </div>
+
             <div class="form-group">
               <label>Score</label>
               <input type="text" id="scoreInput" placeholder="e.g. 85/100">
@@ -107,6 +113,7 @@
           </div>
         </div>
       </div>
+
     </main>
   </div>
   <?!= HtmlService.createHtmlOutputFromFile('JavaScript').getContent(); ?>
