@@ -6,7 +6,8 @@
 const APP_NAME = "Math Marking System";
 const DRIVE_FOLDER_NAME = "Math_Marking_System_Uploads";
 const SHEET_NAME = "Math_Scores";
-const POE_BOT_NAME = "Claude-Opus-4.5"; // Using Claude Opus 4.5 on Poe
+// Default bot if none selected (fallback)
+const DEFAULT_BOT = "Claude-Opus-4.5"; 
 
 /**
  * Serves the Web App
@@ -92,7 +93,6 @@ function uploadFile(data) {
     
     const blob = Utilities.newBlob(Utilities.base64Decode(data.data), data.mimeType, data.fileName);
     const file = folder.createFile(blob);
-    // REMOVED PUBLIC SHARING FOR PRIVACY
     
     return {
       success: true,
@@ -160,8 +160,9 @@ function saveGrade(studentId, score, comment) {
 
 /**
  * Calls Poe API (OpenAI Compatible) to grade the work
+ * Updated to accept dynamic model selection
  */
-function callPoeAPI(studentImages, solutionImages, studentIndex) {
+function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
   const apiKey = PropertiesService.getScriptProperties().getProperty('POE_API_KEY');
   if (!apiKey) {
     return { error: "API Key not found. Please add POE_API_KEY to Script Properties." };
@@ -246,7 +247,8 @@ function callPoeAPI(studentImages, solutionImages, studentIndex) {
   userContent.push({ "type": "text", "text": "--- STUDENT WORK END ---" });
   
   const payload = {
-    "model": POE_BOT_NAME,
+    // USE SELECTED MODEL HERE
+    "model": modelName || DEFAULT_BOT,
     "messages": [
       { "role": "system", "content": systemPrompt },
       { "role": "user", "content": userContent }
@@ -282,7 +284,7 @@ function callPoeAPI(studentImages, solutionImages, studentIndex) {
       return { error: "No content generated." };
     }
     
-    // IMPROVED PARSING LOGIC: Find JSON object with regex
+    // Robust Parsing: Extract JSON object using Regex
     const textResponse = json.choices[0].message.content;
     const jsonMatch = textResponse.match(/\{[\s\S]*\}/);
     
@@ -367,7 +369,6 @@ function createPdfReport(gradingData) {
   
   const folder = getOrCreateFolder();
   const file = folder.createFile(blob);
-  // REMOVED PUBLIC SHARING FOR PRIVACY
   
   return file.getUrl();
 }
