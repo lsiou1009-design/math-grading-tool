@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MathGrade AI Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+    
+    <style>
+        .student-card { transition: transform 0.2s; }
+        .student-card:hover { transform: translateY(-2px); }
+        .bg-gradient-primary { background: linear-gradient(45deg, #0d6efd, #0a58ca); }
+    </style>
+</head>
+<body class="bg-light">
+
+<nav class="navbar navbar-dark bg-gradient-primary mb-4 shadow-sm">
+    <div class="container">
+        <span class="navbar-brand mb-0 h1"><i class="bi bi-calculator"></i> MathGrade AI</span>
+    </div>
+</nav>
+
+<div class="container">
+    
+    <div class="card shadow-sm mb-5">
+        <div class="card-body">
+            <h5 class="card-title text-primary"><i class="bi bi-cloud-upload"></i> Upload Student Work</h5>
+            <form action="/upload" method="post" enctype="multipart/form-data" class="row g-3 align-items-end">
+                <div class="col-md-9">
+                    <label for="fileInput" class="form-label">Select PDF File</label>
+                    <input class="form-control" type="file" id="fileInput" name="file" accept=".pdf" required>
+                </div>
+                <div class="col-md-3">
+                    <button type="submit" class="btn btn-success w-100">
+                        <i class="bi bi-check-circle"></i> Upload & Grade
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <h4 class="mb-3 text-secondary">Student Submissions</h4>
+    <div id="submissions-container" class="row">
+        </div>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+
+<script>
+    // This grabs the data sent from Python
+    const submissions = {{ submissions | tojson | default([]) }};
+
+    function renderDashboard() {
+        const container = document.getElementById('submissions-container');
+        
+        if (submissions.length === 0) {
+            container.innerHTML = '<div class="alert alert-info">No submissions yet. Upload a file above!</div>';
+            return;
+        }
+
+        container.innerHTML = ''; // Clear current list
+
+        submissions.forEach(sub => {
+            // Format the Upload Date
+            const uploadDate = new Date(sub.timestamp).toLocaleString('en-GB', {
+                day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'
+            });
+
+            // Build the "Generated Reports" List (Merged inside the card)
+            let reportsHtml = '';
+            if (sub.reports && sub.reports.length > 0) {
+                reportsHtml = `
+                    <div class="mt-3 pt-3 border-top bg-light rounded p-2">
+                        <h6 class="small text-uppercase fw-bold text-muted mb-2">Generated Reports</h6>
+                        <ul class="list-group list-group-flush small">`;
+                
+                sub.reports.forEach((rep, index) => {
+                    const genDate = new Date(rep.generatedAt).toLocaleString('en-GB', {
+                         day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'
+                    });
+                    
+                    reportsHtml += `
+                        <li class="list-group-item d-flex justify-content-between align-items-center bg-transparent px-0">
+                            <div>
+                                <span class="fw-bold">Version ${index + 1}</span>
+                                <br><span class="text-muted" style="font-size:0.75rem">Generated: ${genDate}</span>
+                            </div>
+                            <div class="btn-group btn-group-sm">
+                                <a href="${rep.pdfUrl}" class="btn btn-outline-danger" download title="Download Report PDF">
+                                    <i class="bi bi-file-pdf"></i> PDF
+                                </a>
+                                <a href="${rep.csvUrl}" class="btn btn-outline-success" download title="Download Marks CSV">
+                                    <i class="bi bi-file-spreadsheet"></i> CSV
+                                </a>
+                            </div>
+                        </li>
+                    `;
+                });
+                reportsHtml += `</ul></div>`;
+            }
+
+            // Build the Card HTML
+            const html = `
+                <div class="col-md-6 col-lg-4 mb-4">
+                    <div class="card student-card shadow-sm h-100">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <strong>${sub.fileName}</strong>
+                            <span class="badge bg-secondary">#${sub.id}</span>
+                        </div>
+                        <div class="card-body">
+                            <p class="card-text small text-muted">
+                                <i class="bi bi-clock"></i> Uploaded: ${uploadDate}
+                            </p>
+                            
+                            <div class="d-flex gap-2">
+                                <a href="${sub.fileUrl}" target="_blank" class="btn btn-primary btn-sm flex-grow-1">
+                                    <i class="bi bi-eye"></i> View Original
+                                </a>
+                                <a href="/delete/${sub.id}" class="btn btn-outline-danger btn-sm" onclick="return confirm('Are you sure?')">
+                                    <i class="bi bi-trash"></i>
+                                </a>
+                            </div>
+
+                            ${reportsHtml}
+                        </div>
+                    </div>
+                </div>
+            `;
+            container.innerHTML += html;
+        });
+    }
+
+    // Run the function when page loads
+    renderDashboard();
+</script>
+
+</body>
+</html>
