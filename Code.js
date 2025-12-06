@@ -1,13 +1,13 @@
 /**
  * Math Marking System - Backend Code
- * Features: Chunking Support, Strict 1M/1A Grading, Traditional Chinese
+ * Features: Chunking Support, Strict 1M/1A Grading, Blank Handling, Traditional Chinese
  */
 
 // CONFIGURATION
 const APP_NAME = "Math Marking System";
 const DRIVE_FOLDER_NAME = "Math_Marking_System_Uploads";
 const SHEET_NAME = "Math_Scores";
-const DEFAULT_BOT = "GPT-5.1"; // Default model
+const DEFAULT_BOT = "GPT-5.1"; // Optimized for GPT-5.1 as requested
 
 /**
  * Serves the Web App
@@ -151,8 +151,8 @@ function saveGrade(studentId, score, comment) {
 
 /**
  * Calls Poe API
- * - Supports Chunking (Accepts partial image lists)
  * - Enforces Strict 1M/1A Grading
+ * - Handles Blank Questions (Force 0 Score)
  * - Enforces Traditional Chinese
  */
 function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
@@ -162,29 +162,31 @@ function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
   }
   const apiUrl = "https://api.poe.com/v1/chat/completions";
   
-  // --- STRICT MARKING SCHEME PROMPT ---
+  // --- STRICT MARKING SCHEME PROMPT (Updated for Blanks & 1M/1A) ---
   const systemPrompt = `
-    You are a STRICT Math Teacher grading a specific part of a student's exam.
+    You are a STRICT Math Teacher.
     
-    **MANDATORY SCORING RULES (1M + 1A):**
-    For every question, you must identify two specific marks:
+    **TASK:** Compare the Student's Work (chunk) against the Solution Key (chunk).
     
-    1. **M Mark (Method):** - Award **1 mark** if the student shows the correct formula, substitution, or logical step matching the Solution Key.
-       - Award **0 marks** if the method is missing, wrong, or skipped.
-       
-    2. **A Mark (Answer):** - Award **1 mark** ONLY if the final answer is exactly correct (including units/signs).
-       - **CRITICAL:** If the Method (M) is wrong, the Answer (A) is automatically **0**. (No "lucky guesses" allowed).
-    
-    **EXAMPLE SCORING:**
-    - Correct Method + Correct Answer = **2/2** (M1 A1)
-    - Correct Method + Wrong Answer = **1/2** (M1 A0)
-    - Wrong Method + Correct Answer = **0/2** (M0 A0)
-    
-    **OUTPUT REQUIREMENTS:**
-    1. **Language:** All comments must be in **Traditional Chinese (繁體中文)**.
-    2. **Format:** Return ONLY valid JSON.
-    3. **Content:** Specifically mention "M1" or "A0" in your comments so the student knows where they lost points.
-    4. **Scope:** Grade ONLY the questions visible in this image chunk.
+    **RULE 1: HANDLING BLANK/UNWRITTEN QUESTIONS (CRITICAL)**
+    - Look at the Solution Key to see which questions *should* be there.
+    - If the student has **skipped** a question or left the space **blank**:
+      - You MUST include this question in the JSON.
+      - You MUST give it a score of **"0/Total"**.
+      - Comment: "未作答 (Blank)".
+    - **NEVER skip a question** just because the student didn't write it. If it's on the page in the solution, grade it as 0.
+
+    **RULE 2: STRICT 1M / 1A GRADING**
+    - **M Mark (Method):** 1 mark if method is correct. 0 if missing/wrong.
+    - **A Mark (Answer):** 1 mark if FINAL ANSWER matches EXACTLY.
+    - **NEGATIVE LOGIC:** If the Student's Answer != Solution Answer, the A mark is **0**.
+      - NO partial credit for "close" answers.
+      - NO credit if they copied the wrong number.
+      - If Method (M) is wrong, Answer (A) is automatically 0.
+
+    **OUTPUT FORMAT:**
+    - Language: **Traditional Chinese (繁體中文)** ONLY.
+    - Format: Valid JSON ONLY.
     
     **JSON STRUCTURE:**
     {
@@ -192,14 +194,15 @@ function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
       "total_score": "ignored",
       "overall_comment": "Summary in Traditional Chinese.",
       "questions": [
-        { "id": "Q1", "score": "X/Y", "comment": "M1 (步驟正確), A0 (計算錯誤)..." },
-        { "id": "Q2", "score": "X/Y", "comment": "M1 A1 (全對)" }
+        { "id": "Q1", "score": "2/2", "comment": "M1 A1 (全對)" },
+        { "id": "Q2", "score": "0/3", "comment": "未作答 (Blank)" },
+        { "id": "Q3", "score": "1/2", "comment": "M1 (步驟對), A0 (答案錯誤)" }
       ]
     }
   `;
   
   const userContent = [
-    { "type": "text", "text": `Grade this exam chunk (Student ${studentIndex}) using the 1M/1A method.` }
+    { "type": "text", "text": `Grade this exam chunk (Student ${studentIndex}). Detect blanks strictly.` }
   ];
   
   // 1. Add Solution Images (Limit to 5 to save context window)
@@ -212,7 +215,7 @@ function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
     });
   }
   
-  // 2. Add Student Images (Accept ALL images sent by client - Client handles chunking)
+  // 2. Add Student Images (Client handles chunking)
   if (Array.isArray(studentImages)) {
     studentImages.forEach(img => {
       userContent.push({
@@ -228,7 +231,8 @@ function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
       { "role": "system", "content": systemPrompt },
       { "role": "user", "content": userContent }
     ],
-    "temperature": 0.1 // Keep it low for strict rule-following
+    // Low temp for strict adherence to rules
+    "temperature": 0.1 
   };
   
   const options = {
@@ -334,6 +338,7 @@ function createPdfReport(gradingData) {
   `;
   
   gradingData.forEach((item, index) => {
+    // Sanitize to prevent XSS
     const safeName = escapeHtml(item.student_name || "Student " + (index + 1));
     const safeScore = escapeHtml(item.total_score);
     const safeComment = escapeHtml(item.overall_comment);
