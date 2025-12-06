@@ -3,6 +3,7 @@
     let currentStudentIndex = 1;
     let pagesPerStudent = 1;
     let currentFileId = "";
+    let currentFileName = ""; // NEW: Track the name
     let currentFileUrl = "";
     let allGrades = [];
     let masterPdfBytes = null; // Store as Uint8Array
@@ -84,10 +85,10 @@
         reader.readAsDataURL(studentFile);
     }
 
-    // Dashboard: Load Files
+    // Dashboard: Load Files (Modified)
     function loadFiles() {
         const list = document.getElementById('fileList');
-        list.innerHTML = "Loading...";
+        list.innerHTML = "<div class='spinner'></div> Loading files...";
         google.script.run
             .withSuccessHandler(function (files) {
                 list.innerHTML = "";
@@ -96,32 +97,88 @@
                     return;
                 }
                 files.forEach(file => {
+                    // Card Container
                     const item = document.createElement('div');
                     item.className = 'file-item';
-                    const nameEl = document.createElement('strong');
-                    nameEl.textContent = file.name;
-                    const dateEl = document.createElement('small');
-                    dateEl.textContent = file.created;
-                    dateEl.style.display = 'block';
+                    item.style.position = 'relative';
+
+                    // Main File Info
+                    const nameEl = document.createElement('div');
+                    nameEl.innerHTML = `<strong>${file.name}</strong>`;
+                    nameEl.style.fontSize = '1.1em';
                     
+                    const dateEl = document.createElement('div');
+                    dateEl.textContent = `Uploaded: ${file.displayDate}`;
+                    dateEl.style.color = '#666';
+                    dateEl.style.fontSize = '0.85em';
+                    dateEl.style.marginBottom = '10px';
+
                     // Grade Button
                     const gradeBtn = document.createElement('button');
-                    gradeBtn.textContent = 'Grade This';
+                    gradeBtn.textContent = '📝 Grade This Paper';
+                    gradeBtn.className = 'primary-btn';
+                    gradeBtn.style.width = '100%';
+                    gradeBtn.style.padding = '8px';
                     gradeBtn.onclick = () => openGrading(file.url, file.id, file.name);
-                    
-                    // Solution Button
-                    const solBtn = document.createElement('button');
-                    solBtn.textContent = 'Use as Solution';
-                    solBtn.className = 'secondary-btn';
-                    solBtn.style.marginTop = '5px';
-                    solBtn.style.fontSize = '0.8rem';
-                    solBtn.onclick = () => loadSolutionFromDrive(file.id, file.name);
-                    
+
                     item.appendChild(nameEl);
                     item.appendChild(dateEl);
-                    item.appendChild(document.createElement('br'));
                     item.appendChild(gradeBtn);
-                    item.appendChild(solBtn);
+
+                    // Generated Reports Section
+                    if (file.generatedFiles && file.generatedFiles.length > 0) {
+                        const divider = document.createElement('hr');
+                        divider.style.border = '0';
+                        divider.style.borderTop = '1px solid #eee';
+                        divider.style.margin = '10px 0';
+                        item.appendChild(divider);
+
+                        const reportLabel = document.createElement('div');
+                        reportLabel.textContent = "Generated Reports:";
+                        reportLabel.style.fontSize = '0.85rem';
+                        reportLabel.style.fontWeight = 'bold';
+                        reportLabel.style.color = '#4b5563';
+                        reportLabel.style.marginBottom = '5px';
+                        item.appendChild(reportLabel);
+
+                        const reportList = document.createElement('div');
+                        reportList.style.display = 'flex';
+                        reportList.style.flexDirection = 'column';
+                        reportList.style.gap = '5px';
+
+                        file.generatedFiles.sort((a,b) => b.created - a.created); // Sort reports newest first
+
+                        file.generatedFiles.forEach(report => {
+                            const link = document.createElement('a');
+                            link.href = report.url;
+                            link.target = "_blank";
+                            link.style.display = 'flex';
+                            link.style.justifyContent = 'space-between';
+                            link.style.alignItems = 'center';
+                            link.style.textDecoration = 'none';
+                            link.style.padding = '6px';
+                            link.style.background = '#f9fafb';
+                            link.style.borderRadius = '4px';
+                            link.style.border = '1px solid #e5e7eb';
+                            link.style.fontSize = '0.8rem';
+
+                            // Icon based on type
+                            const icon = report.type.includes('PDF') ? '📄' : '📊';
+                            
+                            link.innerHTML = `
+                                <span style="color:#374151;">${icon} ${report.type}</span>
+                                <span style="color:#9ca3af; font-size:0.75rem;">${report.displayDate}</span>
+                            `;
+                            
+                            // Hover effect
+                            link.onmouseover = () => link.style.background = '#f3f4f6';
+                            link.onmouseout = () => link.style.background = '#f9fafb';
+                            
+                            reportList.appendChild(link);
+                        });
+                        item.appendChild(reportList);
+                    }
+
                     list.appendChild(item);
                 });
             })
@@ -149,9 +206,10 @@
             .getFileContent(fileId);
     }
 
-    // Open Grading Tab
+    // Open Grading Tab (Modified)
     function openGrading(url, id, name, isNewUpload = false) {
         currentFileId = id;
+        currentFileName = name; // Store name for report generation
         const inputVal = document.getElementById('pagesPerStudent').value;
         pagesPerStudent = parseInt(inputVal) || 1;
         
@@ -457,6 +515,7 @@
         alert("Batch Grading Complete!");
     }
 
+    // Download CSV (Modified to Save to Drive)
     function downloadCsv() {
         if (allGrades.length === 0) { alert("No grades available."); return; }
         
@@ -481,14 +540,26 @@
             csv += row + "\n";
         });
         
-        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = "grades.csv";
-        a.click();
+        // Trigger Server Save
+        const statusDiv = document.getElementById('gradeStatus');
+        statusDiv.textContent = "Saving CSV to Dashboard...";
+        
+        google.script.run
+            .withSuccessHandler(function(res) {
+                if(res.success) {
+                    statusDiv.textContent = "CSV Saved!";
+                    // Optional: Auto download as well
+                    window.open(res.url, '_blank');
+                    alert("CSV saved to Dashboard. Please refresh Dashboard to see it.");
+                } else {
+                    statusDiv.textContent = "Error saving CSV.";
+                    alert("Error: " + res.error);
+                }
+            })
+            .saveCsvReport(csv, currentFileName);
     }
 
+    // Download PDF (Modified to link to file)
     function downloadPdf() {
         if (allGrades.length === 0) { alert("No grades available."); return; }
         const statusDiv = document.getElementById('gradeStatus');
@@ -498,6 +569,6 @@
                 statusDiv.textContent = "PDF Ready!";
                 window.open(url, '_blank');
             })
-            .createPdfReport(allGrades);
+            .createPdfReport(allGrades, currentFileName); // Pass filename
     }
 </script>
