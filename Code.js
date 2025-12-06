@@ -6,7 +6,6 @@
 const APP_NAME = "Math Marking System";
 const DRIVE_FOLDER_NAME = "Math_Marking_System_Uploads";
 const SHEET_NAME = "Math_Scores";
-// Default bot if none selected (fallback)
 const DEFAULT_BOT = "Claude-Opus-4.5"; 
 
 /**
@@ -20,10 +19,9 @@ function doGet(e) {
 }
 
 /**
- * Initial Setup: Creates Drive Folder and Spreadsheet if they don't exist.
+ * Initial Setup
  */
 function setup() {
-  // 1. Create Drive Folder
   const folders = DriveApp.getFoldersByName(DRIVE_FOLDER_NAME);
   let folder;
   if (folders.hasNext()) {
@@ -32,7 +30,6 @@ function setup() {
     folder = DriveApp.createFolder(DRIVE_FOLDER_NAME);
   }
   
-  // 2. Create Spreadsheet
   const files = DriveApp.getFilesByName(SHEET_NAME);
   let ss;
   if (files.hasNext()) {
@@ -41,13 +38,11 @@ function setup() {
     ss = SpreadsheetApp.create(SHEET_NAME);
   }
   
-  // Setup Sheet Headers
   let sheet = ss.getSheets()[0];
   if (sheet.getLastRow() === 0) {
     sheet.appendRow(["Timestamp", "Student ID", "File URL", "Score", "Comments", "Graded By"]);
   }
   
-  // Save IDs to Properties for easy access later
   const scriptProperties = PropertiesService.getScriptProperties();
   scriptProperties.setProperty('FOLDER_ID', folder.getId());
   scriptProperties.setProperty('SHEET_ID', ss.getId());
@@ -56,7 +51,7 @@ function setup() {
 }
 
 /**
- * Helper to get or create the folder if ID is missing
+ * Helper to get/create folder
  */
 function getOrCreateFolder() {
   const props = PropertiesService.getScriptProperties();
@@ -65,12 +60,9 @@ function getOrCreateFolder() {
   if (folderId) {
     try {
       return DriveApp.getFolderById(folderId);
-    } catch (e) {
-      // ID might be invalid/deleted, fall through to search/create
-    }
+    } catch (e) {}
   }
   
-  // Search by name
   const folders = DriveApp.getFoldersByName(DRIVE_FOLDER_NAME);
   if (folders.hasNext()) {
     const folder = folders.next();
@@ -78,19 +70,17 @@ function getOrCreateFolder() {
     return folder;
   }
   
-  // Create new
   const folder = DriveApp.createFolder(DRIVE_FOLDER_NAME);
   props.setProperty('FOLDER_ID', folder.getId());
   return folder;
 }
 
 /**
- * Uploads a file to the specific Drive folder
+ * Uploads file
  */
 function uploadFile(data) {
   try {
     const folder = getOrCreateFolder();
-    
     const blob = Utilities.newBlob(Utilities.base64Decode(data.data), data.mimeType, data.fileName);
     const file = folder.createFile(blob);
     
@@ -106,7 +96,7 @@ function uploadFile(data) {
 }
 
 /**
- * Gets list of PDF files from the folder
+ * Get files list
  */
 function getDriveFiles() {
   const folderId = PropertiesService.getScriptProperties().getProperty('FOLDER_ID');
@@ -129,7 +119,7 @@ function getDriveFiles() {
 }
 
 /**
- * Gets the base64 content of a file from Drive
+ * Get file content
  */
 function getFileContent(fileId) {
   try {
@@ -147,7 +137,7 @@ function getFileContent(fileId) {
 }
 
 /**
- * Saves the grade to the Google Sheet
+ * Save Grade
  */
 function saveGrade(studentId, score, comment) {
   const sheetId = PropertiesService.getScriptProperties().getProperty('SHEET_ID');
@@ -159,8 +149,7 @@ function saveGrade(studentId, score, comment) {
 }
 
 /**
- * Calls Poe API (OpenAI Compatible) to grade the work
- * Updated to accept dynamic model selection
+ * Calls Poe API - WITH MATH CORRECTION
  */
 function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
   const apiKey = PropertiesService.getScriptProperties().getProperty('POE_API_KEY');
@@ -247,7 +236,6 @@ function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
   userContent.push({ "type": "text", "text": "--- STUDENT WORK END ---" });
   
   const payload = {
-    // USE SELECTED MODEL HERE
     "model": modelName || DEFAULT_BOT,
     "messages": [
       { "role": "system", "content": systemPrompt },
@@ -284,7 +272,7 @@ function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
       return { error: "No content generated." };
     }
     
-    // Robust Parsing: Extract JSON object using Regex
+    // Robust Parsing
     const textResponse = json.choices[0].message.content;
     const jsonMatch = textResponse.match(/\{[\s\S]*\}/);
     
@@ -292,32 +280,63 @@ function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
       return { error: "No JSON found in response: " + textResponse };
     }
     
+    let gradeData;
     try {
-      return JSON.parse(jsonMatch[0]);
+      gradeData = JSON.parse(jsonMatch[0]);
     } catch (e) {
       return { error: "JSON Parse Failed: " + e.toString() };
     }
+
+    // ======================================================
+    // START: MATH CORRECTION LOGIC
+    // ======================================================
+    if (gradeData.questions && Array.isArray(gradeData.questions)) {
+      let calculatedObtained = 0;
+      let calculatedTotal = 0;
+      let hasDenominator = false;
+
+      gradeData.questions.forEach(q => {
+        if (q.score) {
+          // Parse score string like "5/10" or "5"
+          const parts = q.score.toString().split('/');
+          const obtained = parseFloat(parts[0]);
+          
+          if (!isNaN(obtained)) {
+            calculatedObtained += obtained;
+          }
+          
+          // Check for denominator (Max score)
+          if (parts.length > 1) {
+            const possible = parseFloat(parts[1]);
+            if (!isNaN(possible)) {
+              calculatedTotal += possible;
+              hasDenominator = true;
+            }
+          }
+        }
+      });
+
+      // Overwrite the AI's total_score with our calculated one
+      if (hasDenominator && calculatedTotal > 0) {
+        gradeData.total_score = `${calculatedObtained}/${calculatedTotal}`;
+      } else {
+        gradeData.total_score = `${calculatedObtained}`;
+      }
+    }
+    // ======================================================
+    // END: MATH CORRECTION LOGIC
+    // ======================================================
+
+    return gradeData;
     
   } catch (e) {
-    return { error: "API Error: " + e.toString() };
+    console.error("Critical Error in callPoeAPI:", e);
+    return { error: "Connection Failed. Details: " + e.toString() };
   }
 }
 
 /**
- * Helper to escape HTML to prevent XSS in PDF generation
- */
-function escapeHtml(text) {
-  if (!text) return "";
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
-
-/**
- * Generates a PDF Report
+ * PDF Report Generator
  */
 function createPdfReport(gradingData) {
   let html = `
@@ -371,4 +390,9 @@ function createPdfReport(gradingData) {
   const file = folder.createFile(blob);
   
   return file.getUrl();
+}
+
+function escapeHtml(text) {
+  if (!text) return "";
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
 }
