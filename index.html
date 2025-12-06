@@ -10,6 +10,39 @@
     pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
   </script>
   <?!= HtmlService.createHtmlOutputFromFile('Stylesheet').getContent(); ?>
+  <style>
+    /* Custom overrides for the new button layout */
+    .big-grade-btn {
+      background: linear-gradient(135deg, #10b981, #059669); /* Green Gradient */
+      color: white;
+      border: none;
+      padding: 15px 20px;
+      border-radius: 8px;
+      font-size: 1.1rem;
+      font-weight: bold;
+      width: 100%;
+      cursor: pointer;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+      transition: transform 0.1s;
+      margin-bottom: 10px;
+    }
+    .big-grade-btn:active { transform: scale(0.98); }
+    
+    .small-grade-btn {
+      background: #f3f4f6;
+      color: #374151;
+      border: 1px solid #d1d5db;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 0.9rem;
+      width: 100%;
+      cursor: pointer;
+    }
+    .small-grade-btn:hover { background: #e5e7eb; }
+
+    /* Hide the old textboxes area since user requested deletion */
+    .grading-panel { justify-content: flex-start; }
+  </style>
 </head>
 <body>
   <div class="app-container">
@@ -57,9 +90,9 @@
         <div class="grading-layout">
           <div class="pdf-panel">
             <div class="panel-header">
-              <span>Student Paper</span>
+              <span>Student Paper Preview</span>
               <div class="pagination">
-                <span id="pageGuide">Pages 1-1</span>
+                <span id="pageGuide">Page 1</span>
               </div>
             </div>
             <iframe id="pdfFrame" src="" width="100%" height="100%"></iframe>
@@ -67,7 +100,7 @@
 
           <div class="grading-panel">
             <div class="panel-header">
-              <span>Grading & Feedback</span>
+              <span>Grading Controls</span>
               <div class="student-nav">
                 <button onclick="prevStudent()" class="nav-sm">&lt;</button>
                 <span id="studentLabel" style="margin: 0 10px;">Student 1</span>
@@ -76,41 +109,36 @@
             </div>
 
             <div class="ai-controls">
-              <div class="info-box" style="display: flex; align-items: center; justify-content: center; gap: 10px;">
-                <label for="modelSelect"><strong>Model:</strong></label>
-                <select id="modelSelect" style="background: transparent; border: 1px solid #4f46e5; border-radius: 4px; padding: 4px; color: #3730a3; font-weight: bold; cursor: pointer;">
+              <div class="info-box" style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px;">
+                <label for="modelSelect" style="font-size:0.9rem;">Model:</label>
+                <select id="modelSelect" style="background: white; border: 1px solid #ccc; border-radius: 4px; padding: 4px; max-width: 150px;">
                   <option value="Claude-Opus-4.5" selected>Claude Opus 4.5</option>
                   <option value="Gemini-3-Pro">Gemini 3 Pro</option>
                   <option value="GPT-5.1">GPT 5.1</option>
                 </select>
               </div>
 
-              <div style="display: flex; gap: 5px; margin-bottom: 10px;">
-                <input type="number" id="totalStudents" placeholder="Total Students" value="1" min="1" style="flex: 1;">
-                <button onclick="gradeAll()" class="secondary-btn" style="flex: 1; margin: 0;">Grade All</button>
+              <div style="margin-bottom: 15px;">
+                <div style="display:flex; gap: 5px; margin-bottom: 5px;">
+                   <label style="font-size:0.8rem; color:#666;">Total Students:</label>
+                   <input type="number" id="totalStudents" value="1" min="1" style="width: 50px; padding: 2px;">
+                </div>
+                <button onclick="gradeAll()" class="big-grade-btn">🚀 Grade ALL Students</button>
               </div>
 
-              <button onclick="runAutoGrade()" class="magic-btn">✨ Grade Current Student</button>
-              <div id="gradeStatus" class="status-msg"></div>
+              <div style="margin-bottom: 20px; border-top: 1px solid #eee; padding-top: 10px;">
+                <button onclick="runAutoGrade()" class="small-grade-btn">Grade Current Student Only</button>
+              </div>
 
-              <div class="export-controls" style="margin-top: 10px; display: flex; gap: 5px;">
+              <div id="gradeStatus" class="status-msg" style="min-height: 20px; margin-bottom: 20px; color: #4f46e5; font-weight: bold;"></div>
+
+              <div class="export-controls" style="display: flex; gap: 10px;">
                 <button onclick="downloadCsv()" class="nav-sm" style="flex: 1;">Download CSV</button>
                 <button onclick="downloadPdf()" class="nav-sm" style="flex: 1;">Download PDF</button>
               </div>
             </div>
-
-            <div class="form-group">
-              <label>Score</label>
-              <input type="text" id="scoreInput" placeholder="e.g. 85/100">
+            
             </div>
-            <div class="form-group">
-              <label>Comments</label>
-              <textarea id="commentInput" rows="10" placeholder="AI feedback will appear here..."></textarea>
-            </div>
-            <div class="actions">
-              <button onclick="saveGrade()" class="primary-btn">Save Grade</button>
-            </div>
-          </div>
         </div>
       </div>
 
