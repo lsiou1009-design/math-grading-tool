@@ -1,21 +1,13 @@
 /**
  * Math Marking System - Backend Code
- * 
- * INSTRUCTIONS:
- * 1. Create a new Google Apps Script project at https://script.google.com
- * 2. Paste this code into 'Code.gs'
- * 3. Create 'index.html', 'JavaScript.html', and 'Stylesheet.html' and paste their respective content.
- * 4. Run the 'setup()' function once to initialize the Drive Folder and Sheet.
- * 5. IMPORTANT: Go to Project Settings (Gear Icon) > Script Properties > Add new property:
- *    Property: GEMINI_API_KEY
- *    Value: Your-Actual-API-Key
- * 6. Deploy as Web App (Execute as: Me, Who has access: Anyone).
  */
+
 // CONFIGURATION
 const APP_NAME = "Math Marking System";
 const DRIVE_FOLDER_NAME = "Math_Marking_System_Uploads";
 const SHEET_NAME = "Math_Scores";
 const POE_BOT_NAME = "Claude-Opus-4.5"; // Using Claude Opus 4.5 on Poe
+
 /**
  * Serves the Web App
  */
@@ -25,6 +17,7 @@ function doGet(e) {
     .setTitle(APP_NAME)
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
+
 /**
  * Initial Setup: Creates Drive Folder and Spreadsheet if they don't exist.
  */
@@ -60,6 +53,7 @@ function setup() {
   
   return "Setup Complete! Folder ID: " + folder.getId();
 }
+
 /**
  * Helper to get or create the folder if ID is missing
  */
@@ -88,6 +82,7 @@ function getOrCreateFolder() {
   props.setProperty('FOLDER_ID', folder.getId());
   return folder;
 }
+
 /**
  * Uploads a file to the specific Drive folder
  */
@@ -97,7 +92,7 @@ function uploadFile(data) {
     
     const blob = Utilities.newBlob(Utilities.base64Decode(data.data), data.mimeType, data.fileName);
     const file = folder.createFile(blob);
-    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    // REMOVED PUBLIC SHARING FOR PRIVACY
     
     return {
       success: true,
@@ -109,6 +104,7 @@ function uploadFile(data) {
     return { success: false, error: e.toString() };
   }
 }
+
 /**
  * Gets list of PDF files from the folder
  */
@@ -131,6 +127,7 @@ function getDriveFiles() {
   }
   return fileList;
 }
+
 /**
  * Gets the base64 content of a file from Drive
  */
@@ -148,6 +145,7 @@ function getFileContent(fileId) {
     return { success: false, error: e.toString() };
   }
 }
+
 /**
  * Saves the grade to the Google Sheet
  */
@@ -159,13 +157,9 @@ function saveGrade(studentId, score, comment) {
   sheet.appendRow([new Date(), studentId, "", score, comment, "Teacher"]);
   return "Saved successfully!";
 }
+
 /**
  * Calls Poe API (OpenAI Compatible) to grade the work
- * Receives a base64 IMAGE of the student's work.
- */
-/**
- * Calls Poe API (OpenAI Compatible) to grade the work
- * Receives an ARRAY of base64 IMAGES of the student's work AND the solution.
  */
 function callPoeAPI(studentImages, solutionImages, studentIndex) {
   const apiKey = PropertiesService.getScriptProperties().getProperty('POE_API_KEY');
@@ -196,7 +190,7 @@ function callPoeAPI(studentImages, solutionImages, studentIndex) {
     1. **TRANSCRIBE**: Read the student's work.
     2. **COMPARE**: Check against the provided Solution Key.
     3. **GRADE**: Assign a score based on the M/A marks.
-    4. **COMMENT**: Write a short comment in **Traditional Chinese (繁體中文)** explaining where marks were lost (e.g., "Missing M1 for substitution").
+    4. **COMMENT**: Write a short comment in **Traditional Chinese (繁體中文)** explaining where marks were lost.
     
     **OUTPUT REQUIREMENTS:**
     - **Format**: You MUST return the exact JSON structure below.
@@ -209,23 +203,19 @@ function callPoeAPI(studentImages, solutionImages, studentIndex) {
       "questions": [
         { "id": "Q1", "score": "X/Y", "comment": "Feedback on M/A marks (max 20 words)" },
         { "id": "Q2", "score": "X/Y", "comment": "Feedback on M/A marks (max 20 words)" }
-        // ... add more questions as found
       ]
     }
     
     If the page is blank, score 0 and return empty questions array.
     RETURN ONLY JSON. NO MARKDOWN.
   `;
-  // Construct User Message
+  
   const userContent = [
-    {
-      "type": "text",
-      "text": `Grade this student's work (Student ${studentIndex}).`
-    }
+    { "type": "text", "text": `Grade this student's work (Student ${studentIndex}).` }
   ];
-  // 1. Add Solution Images (Context)
+  
+  // 1. Add Solution Images
   if (solutionImages && solutionImages.length > 0) {
-    console.log(`[Poe API] Adding ${solutionImages.length} solution images to prompt.`);
     userContent.push({ "type": "text", "text": "--- OFFICIAL SOLUTION KEY START ---" });
     solutionImages.forEach(img => {
       userContent.push({
@@ -235,9 +225,9 @@ function callPoeAPI(studentImages, solutionImages, studentIndex) {
     });
     userContent.push({ "type": "text", "text": "--- OFFICIAL SOLUTION KEY END ---" });
   } else {
-    console.warn("[Poe API] NO SOLUTION IMAGES PROVIDED!");
     userContent.push({ "type": "text", "text": "WARNING: No Solution Key provided. Grade based on general mathematical correctness." });
   }
+  
   // 2. Add Student Images
   userContent.push({ "type": "text", "text": "--- STUDENT WORK START ---" });
   if (Array.isArray(studentImages)) {
@@ -254,29 +244,24 @@ function callPoeAPI(studentImages, solutionImages, studentIndex) {
     });
   }
   userContent.push({ "type": "text", "text": "--- STUDENT WORK END ---" });
+  
   const payload = {
     "model": POE_BOT_NAME,
     "messages": [
-      {
-        "role": "system",
-        "content": systemPrompt
-      },
-      {
-        "role": "user",
-        "content": userContent
-      }
+      { "role": "system", "content": systemPrompt },
+      { "role": "user", "content": userContent }
     ],
     "temperature": 0.3
   };
+  
   const options = {
     "method": "post",
     "contentType": "application/json",
-    "headers": {
-      "Authorization": `Bearer ${apiKey}`
-    },
+    "headers": { "Authorization": `Bearer ${apiKey}` },
     "payload": JSON.stringify(payload),
     "muteHttpExceptions": true
   };
+  
   try {
     const response = UrlFetchApp.fetch(apiUrl, options);
     const responseCode = response.getResponseCode();
@@ -285,6 +270,7 @@ function callPoeAPI(studentImages, solutionImages, studentIndex) {
     if (responseCode !== 200) {
       return { error: `Poe API Error (${responseCode}): ${responseText}` };
     }
+    
     let json;
     try {
       json = JSON.parse(responseText);
@@ -295,17 +281,26 @@ function callPoeAPI(studentImages, solutionImages, studentIndex) {
     if (!json.choices || !json.choices[0].message) {
       return { error: "No content generated." };
     }
-    // Extract text from Poe response
-    const textResponse = json.choices[0].message.content;
     
-    // Attempt to parse JSON from the text response
-    const cleanJson = textResponse.replace(/```json/g, '').replace(/```/g, '').trim();
-    return JSON.parse(cleanJson);
+    // IMPROVED PARSING LOGIC: Find JSON object with regex
+    const textResponse = json.choices[0].message.content;
+    const jsonMatch = textResponse.match(/\{[\s\S]*\}/);
+    
+    if (!jsonMatch) {
+      return { error: "No JSON found in response: " + textResponse };
+    }
+    
+    try {
+      return JSON.parse(jsonMatch[0]);
+    } catch (e) {
+      return { error: "JSON Parse Failed: " + e.toString() };
+    }
     
   } catch (e) {
     return { error: "API Error: " + e.toString() };
   }
 }
+
 /**
  * Helper to escape HTML to prevent XSS in PDF generation
  */
@@ -318,14 +313,9 @@ function escapeHtml(text) {
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
 }
+
 /**
- * Generates a PDF Report from the grading data
- * Format:
- * 學生 (1): Name
- * 分數:
- * 整體評語:
- * 細項評語:
- * Q1: (分數) (評語)
+ * Generates a PDF Report
  */
 function createPdfReport(gradingData) {
   let html = `
@@ -344,7 +334,6 @@ function createPdfReport(gradingData) {
   `;
   
   gradingData.forEach((item, index) => {
-    // Sanitize all inputs before putting them into HTML
     const safeName = escapeHtml(item.student_name || "Student " + (index + 1));
     const safeScore = escapeHtml(item.total_score);
     const safeComment = escapeHtml(item.overall_comment);
@@ -378,7 +367,7 @@ function createPdfReport(gradingData) {
   
   const folder = getOrCreateFolder();
   const file = folder.createFile(blob);
-  file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  // REMOVED PUBLIC SHARING FOR PRIVACY
   
   return file.getUrl();
 }
