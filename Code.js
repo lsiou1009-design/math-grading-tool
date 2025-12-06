@@ -97,26 +97,80 @@ function uploadFile(data) {
 }
 
 /**
- * Gets list of PDF files
+ * Gets list of Files grouped by Student Paper
+ * Groups Generated Reports and CSVs under their original file
  */
 function getDriveFiles() {
   const folderId = PropertiesService.getScriptProperties().getProperty('FOLDER_ID');
   if (!folderId) return [];
   
   const folder = DriveApp.getFolderById(folderId);
-  const files = folder.getFilesByType(MimeType.PDF);
-  const fileList = [];
-  
+  const files = folder.getFiles();
+  const fileMap = {};
+
+  // 1. First pass: Collect all files
+  const allFiles = [];
   while (files.hasNext()) {
     const file = files.next();
-    fileList.push({
+    allFiles.push({
       id: file.getId(),
       name: file.getName(),
       url: file.getUrl(),
-      created: file.getDateCreated().toLocaleDateString()
+      mimeType: file.getMimeType(),
+      created: file.getDateCreated() // Keep as object for sorting
     });
   }
-  return fileList;
+
+  // 2. Identify Parents (Uploaded Student PDFs) and Children (Reports/CSVs)
+  allFiles.sort((a, b) => b.created - a.created); // Newest first
+
+  allFiles.forEach(file => {
+    // Check if it's a generated file
+    const isReport = file.name.includes("_Report_") && file.mimeType === MimeType.PDF;
+    const isCsv = file.name.includes("_Grades_") && file.mimeType === MimeType.CSV;
+
+    if (isReport || isCsv) {
+      // It's a child. Try to find the parent name prefix.
+      // Split by _Report_ or _Grades_ to find base name
+      const separator = isReport ? "_Report_" : "_Grades_";
+      const baseName = file.name.split(separator)[0];
+      
+      if (!fileMap[baseName]) fileMap[baseName] = { children: [] };
+      fileMap[baseName].children.push({
+        ...file,
+        type: isReport ? 'PDF Report' : 'CSV Grades',
+        displayDate: formatDate(file.created)
+      });
+    } else {
+      // It's likely a parent (Student Upload)
+      if (!fileMap[file.name]) fileMap[file.name] = { children: [] };
+      fileMap[file.name].parent = {
+        ...file,
+        displayDate: formatDate(file.created)
+      };
+    }
+  });
+
+  // 3. Convert Map to List
+  const result = [];
+  Object.keys(fileMap).forEach(key => {
+    const item = fileMap[key];
+    if (item.parent) {
+      result.push({
+        ...item.parent,
+        generatedFiles: item.children
+      });
+    }
+  });
+
+  return result;
+}
+
+/**
+ * Helper to Format Date
+ */
+function formatDate(dateObj) {
+  return Utilities.formatDate(dateObj, Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm");
 }
 
 /**
@@ -194,9 +248,9 @@ function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
       "total_score": "ignored",
       "overall_comment": "Summary in Traditional Chinese.",
       "questions": [
-        { "id": "Q1", "score": "2/2", "comment": "M1 A1 (全對)" },
+        { "id": "Q1", "score": "2/2", "comment": "1M 1A (全對)" },
         { "id": "Q2", "score": "0/3", "comment": "未作答 (Blank)" },
-        { "id": "Q3", "score": "1/2", "comment": "M1 (步驟對), A0 (答案錯誤)" }
+        { "id": "Q3", "score": "1/2", "comment": "1M (步驟對), 0A (答案錯誤)" }
       ]
     }
   `;
@@ -321,7 +375,7 @@ function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
 /**
  * Generates a PDF Report from the grading data
  */
-function createPdfReport(gradingData) {
+function createPdfReport(gradingData, sourceFileName) {
   let html = `
     <html>
       <head>
@@ -368,12 +422,35 @@ function createPdfReport(gradingData) {
   html += `</body></html>`;
   
   const blob = HtmlService.createHtmlOutput(html).getAs(MimeType.PDF);
-  blob.setName(`Math_Exam_Report_${new Date().toLocaleDateString()}.pdf`);
+  
+  // naming convention: [OriginalName]_Report_[Timestamp].pdf
+  const cleanSourceName = sourceFileName ? sourceFileName.replace(/\.pdf$/i, "") : "Exam";
+  const timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyyMMdd-HHmm");
+  blob.setName(`${cleanSourceName}_Report_${timestamp}.pdf`);
   
   const folder = getOrCreateFolder();
   const file = folder.createFile(blob);
   
   return file.getUrl();
+}
+
+/**
+ * Saves CSV to Drive (New Function)
+ */
+function saveCsvReport(csvContent, sourceFileName) {
+  try {
+    const folder = getOrCreateFolder();
+    const cleanSourceName = sourceFileName ? sourceFileName.replace(/\.pdf$/i, "") : "Exam";
+    const timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyyMMdd-HHmm");
+    const fileName = `${cleanSourceName}_Grades_${timestamp}.csv`;
+    
+    const blob = Utilities.newBlob(csvContent, MimeType.CSV, fileName);
+    const file = folder.createFile(blob);
+    
+    return { success: true, url: file.getUrl() };
+  } catch (e) {
+    return { success: false, error: e.toString() };
+  }
 }
 
 /**
