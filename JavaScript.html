@@ -141,7 +141,7 @@
                     }
                     solutionImagesBase64 = await convertPdfToImages(bytes);
                     const infoBox = document.querySelector('.info-box');
-                    if (infoBox) infoBox.innerHTML = `<strong>Model:</strong> Poe (Claude-Opus-4.5) <br> <strong>Solution:</strong> Loaded (${solutionImagesBase64.length} pages)`;
+                    // Removed old static text update since we have a dropdown now
                     alert(`Solution Key Loaded: ${fileName} (${solutionImagesBase64.length} pages)`);
                 } else {
                     alert("Error loading solution: " + res.error);
@@ -279,6 +279,10 @@
         const statusDiv = document.getElementById('gradeStatus');
         const commentBox = document.getElementById('commentInput');
         const scoreBox = document.getElementById('scoreInput');
+        
+        // --- NEW: GET SELECTED MODEL ---
+        const selectedModel = document.getElementById('modelSelect').value;
+        // -------------------------------
 
         if (solutionImagesBase64.length === 0) {
             if (!confirm("⚠️ WARNING: No Solution Key loaded. Proceed anyway?")) return null;
@@ -301,7 +305,7 @@
             
             statusDiv.textContent = "Converting pages to Images...";
             const imagesBase64 = await convertPdfToImages(bytes);
-            statusDiv.textContent = `Sending Student ${currentStudentIndex} to Poe...`;
+            statusDiv.textContent = `Sending Student ${currentStudentIndex} to ${selectedModel}...`;
 
             return new Promise((resolve, reject) => {
                 google.script.run
@@ -331,12 +335,11 @@
                             if (existingIdx >= 0) allGrades[existingIdx] = gradeData;
                             else allGrades.push(gradeData);
 
-                            // --- AUTO-SAVE ADDED HERE ---
+                            // Auto-save
                             const sId = gradeData.student_name || `Student ${currentStudentIndex}`;
                             google.script.run
                                 .withFailureHandler(err => console.error("Auto-save failed", err))
                                 .saveGrade(sId, gradeData.total_score, gradeData.overall_comment);
-                            // -----------------------------
 
                             resolve(gradeData);
                         }
@@ -349,7 +352,8 @@
                         statusDiv.textContent = "System Error: " + err.message;
                         resolve(null);
                     })
-                    .callPoeAPI(imagesBase64, solutionImagesBase64, currentStudentIndex);
+                    // PASS THE SELECTED MODEL HERE
+                    .callPoeAPI(imagesBase64, solutionImagesBase64, currentStudentIndex, selectedModel);
             });
         } catch (e) {
             if (!isBatch) {
