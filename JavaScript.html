@@ -259,7 +259,11 @@
         const images = [];
         for (let i = 1; i <= numPages; i++) {
             const page = await pdf.getPage(i);
-            const scale = 1.5;
+            
+            // --- UPDATED SCALE TO 3.0 FOR BETTER ACCURACY ---
+            const scale = 3.0; 
+            // ------------------------------------------------
+
             const viewport = page.getViewport({ scale: scale });
             const canvas = document.createElement('canvas');
             const context = canvas.getContext('2d');
@@ -279,7 +283,6 @@
         const commentBox = document.getElementById('commentInput');
         const scoreBox = document.getElementById('scoreInput');
         
-        // --- 1. GET SELECTED MODEL FROM DROPDOWN ---
         const selectedModel = document.getElementById('modelSelect').value;
 
         if (solutionImagesBase64.length === 0) {
@@ -319,7 +322,6 @@
                             statusDiv.textContent = "Error occurred.";
                             resolve(null);
                         } else {
-                            // --- SUCCESS ---
                             const score = result.total_score || "N/A";
                             const comment = result.overall_comment || "No comments.";
                             scoreBox.value = score;
@@ -331,12 +333,10 @@
                                 gradeData.student_name = `Student ${currentStudentIndex}`;
                             }
                             
-                            // Store locally
                             const existingIdx = allGrades.findIndex(g => g.student_name === gradeData.student_name);
                             if (existingIdx >= 0) allGrades[existingIdx] = gradeData;
                             else allGrades.push(gradeData);
 
-                            // --- 2. AUTO-SAVE TO SHEET ---
                             const sId = gradeData.student_name || `Student ${currentStudentIndex}`;
                             google.script.run
                                 .withFailureHandler(err => console.error("Auto-save failed", err))
@@ -353,7 +353,6 @@
                         statusDiv.textContent = "System Error: " + err.message;
                         resolve(null);
                     })
-                    // --- 3. PASS MODEL TO SERVER ---
                     .callPoeAPI(imagesBase64, solutionImagesBase64, currentStudentIndex, selectedModel);
             });
         } catch (e) {
