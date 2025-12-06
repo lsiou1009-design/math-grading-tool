@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Math Marking System</title>
+  <script src="https://unpkg.com/pdf-lib/dist/pdf-lib.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script>
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  </script>
+  <?!= HtmlService.createHtmlOutputFromFile('Stylesheet').getContent(); ?>
+</head>
+<body>
+  <div class="app-container">
+    <!-- Sidebar / Navigation -->
+    <nav class="sidebar">
+      <div class="logo">MathMarker</div>
+      <button onclick="showTab('upload')" class="nav-btn active">Upload</button>
+      <button onclick="showTab('dashboard')" class="nav-btn">Dashboard</button>
+      <button onclick="showTab('grading')" class="nav-btn">Grading</button>
+    </nav>
+    <!-- Main Content -->
+    <main class="content">
+      <!-- UPLOAD TAB -->
+      <div id="upload" class="tab-content active">
+        <h2>Upload Exam Papers</h2>
+        <div class="upload-card">
+          <h3>1. Bulk Student PDF</h3>
+          <p>Upload the scanned PDF containing all student papers.</p>
+          <input type="file" id="studentFile" accept="application/pdf">
+        </div>
+        <div class="upload-card">
+          <h3>2. Solution Key</h3>
+          <p>Upload the solution PDF or text.</p>
+          <input type="file" id="solutionFile" accept="application/pdf">
+        </div>
+        <div class="upload-card">
+          <h3>3. Configuration</h3>
+          <label>Pages per Student:</label>
+          <input type="number" id="pagesPerStudent" value="1" min="1" style="width: 60px; padding: 5px;">
+        </div>
+        <div class="actions">
+          <button onclick="handleUpload()" class="primary-btn">Upload Files</button>
+          <div id="uploadStatus"></div>
+        </div>
+      </div>
+      <!-- DASHBOARD TAB -->
+      <div id="dashboard" class="tab-content">
+        <h2>Uploaded Papers</h2>
+        <button onclick="loadFiles()" class="secondary-btn">Refresh List</button>
+        <div id="fileList" class="file-grid">
+          <!-- File items will be injected here -->
+          <p>Loading...</p>
+        </div>
+      </div>
+      <!-- GRADING TAB -->
+      <div id="grading" class="tab-content">
+        <div class="grading-layout">
+          <!-- Left: PDF Viewer -->
+          <div class="pdf-panel">
+            <div class="panel-header">
+              <span>Student Paper</span>
+              <div class="pagination">
+                <!-- We use this to guide the teacher, though iframe might not sync perfectly -->
+                <span id="pageGuide">Pages 1-1</span>
+              </div>
+            </div>
+            <iframe id="pdfFrame" src="" width="100%" height="100%"></iframe>
+          </div>
+          <!-- Right: Grading Form -->
+          <div class="grading-panel">
+            <div class="panel-header">
+              <span>Grading & Feedback</span>
+              <div class="student-nav">
+                <button onclick="prevStudent()" class="nav-sm">&lt;</button>
+                <span id="studentLabel" style="margin: 0 10px;">Student 1</span>
+                <button onclick="nextStudent()" class="nav-sm">&gt;</button>
+              </div>
+            </div>
+            <div class="ai-controls">
+              <div class="info-box">
+                <strong>Model:</strong> Gemini
+              </div>
+              <div style="display: flex; gap: 5px; margin-bottom: 10px;">
+                <input type="number" id="totalStudents" placeholder="Total Students" value="1" min="1" style="flex: 1;">
+                <button onclick="gradeAll()" class="secondary-btn" style="flex: 1; margin: 0;">Grade All</button>
+              </div>
+              <button onclick="runAutoGrade()" class="magic-btn">✨ Grade Current Student</button>
+              <div id="gradeStatus" class="status-msg"></div>
+              <div class="export-controls" style="margin-top: 10px; display: flex; gap: 5px;">
+                <button onclick="downloadCsv()" class="nav-sm" style="flex: 1;">Download CSV</button>
+                <button onclick="downloadPdf()" class="nav-sm" style="flex: 1;">Download PDF</button>
+              </div>
+            </div>
+            <div class="form-group">
+              <label>Score</label>
+              <input type="text" id="scoreInput" placeholder="e.g. 85/100">
+            </div>
+            <div class="form-group">
+              <label>Comments</label>
+              <textarea id="commentInput" rows="10" placeholder="AI feedback will appear here..."></textarea>
+            </div>
+            <div class="actions">
+              <button onclick="saveGrade()" class="primary-btn">Save Grade</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+  <?!= HtmlService.createHtmlOutputFromFile('JavaScript').getContent(); ?>
+</body>
+</html>
