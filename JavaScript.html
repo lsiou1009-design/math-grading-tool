@@ -1,385 +1,527 @@
-/**
- * Math Marking System - Backend Code
- * Features: Chunking Support, Strict 1M/1A Grading, Traditional Chinese
- */
+<script>
+    // State
+    let currentStudentIndex = 1;
+    let pagesPerStudent = 1;
+    let currentFileId = "";
+    let currentFileUrl = "";
+    let allGrades = [];
+    let masterPdfBytes = null; // Store as Uint8Array
+    let solutionImagesBase64 = []; // Store solution images
 
-// CONFIGURATION
-const APP_NAME = "Math Marking System";
-const DRIVE_FOLDER_NAME = "Math_Marking_System_Uploads";
-const SHEET_NAME = "Math_Scores";
-const DEFAULT_BOT = "GPT-5.1"; // Default model
-
-/**
- * Serves the Web App
- */
-function doGet(e) {
-  return HtmlService.createTemplateFromFile('index')
-    .evaluate()
-    .setTitle(APP_NAME)
-    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
-}
-
-/**
- * Initial Setup: Creates Drive Folder and Spreadsheet
- */
-function setup() {
-  const folders = DriveApp.getFoldersByName(DRIVE_FOLDER_NAME);
-  let folder;
-  if (folders.hasNext()) {
-    folder = folders.next();
-  } else {
-    folder = DriveApp.createFolder(DRIVE_FOLDER_NAME);
-  }
-  
-  const files = DriveApp.getFilesByName(SHEET_NAME);
-  let ss;
-  if (files.hasNext()) {
-    ss = SpreadsheetApp.open(files.next());
-  } else {
-    ss = SpreadsheetApp.create(SHEET_NAME);
-  }
-  
-  let sheet = ss.getSheets()[0];
-  if (sheet.getLastRow() === 0) {
-    sheet.appendRow(["Timestamp", "Student ID", "File URL", "Score", "Comments", "Graded By"]);
-  }
-  
-  const scriptProperties = PropertiesService.getScriptProperties();
-  scriptProperties.setProperty('FOLDER_ID', folder.getId());
-  scriptProperties.setProperty('SHEET_ID', ss.getId());
-  
-  return "Setup Complete! Folder ID: " + folder.getId();
-}
-
-/**
- * Helper to get or create the folder
- */
-function getOrCreateFolder() {
-  const props = PropertiesService.getScriptProperties();
-  let folderId = props.getProperty('FOLDER_ID');
-  
-  if (folderId) {
-    try {
-      return DriveApp.getFolderById(folderId);
-    } catch (e) {}
-  }
-  
-  const folders = DriveApp.getFoldersByName(DRIVE_FOLDER_NAME);
-  if (folders.hasNext()) {
-    const folder = folders.next();
-    props.setProperty('FOLDER_ID', folder.getId());
-    return folder;
-  }
-  
-  const folder = DriveApp.createFolder(DRIVE_FOLDER_NAME);
-  props.setProperty('FOLDER_ID', folder.getId());
-  return folder;
-}
-
-/**
- * Uploads a file to Drive
- */
-function uploadFile(data) {
-  try {
-    const folder = getOrCreateFolder();
-    const blob = Utilities.newBlob(Utilities.base64Decode(data.data), data.mimeType, data.fileName);
-    const file = folder.createFile(blob);
-    
-    return {
-      success: true,
-      fileId: file.getId(),
-      url: file.getUrl(),
-      name: file.getName()
-    };
-  } catch (e) {
-    return { success: false, error: e.toString() };
-  }
-}
-
-/**
- * Gets list of PDF files
- */
-function getDriveFiles() {
-  const folderId = PropertiesService.getScriptProperties().getProperty('FOLDER_ID');
-  if (!folderId) return [];
-  
-  const folder = DriveApp.getFolderById(folderId);
-  const files = folder.getFilesByType(MimeType.PDF);
-  const fileList = [];
-  
-  while (files.hasNext()) {
-    const file = files.next();
-    fileList.push({
-      id: file.getId(),
-      name: file.getName(),
-      url: file.getUrl(),
-      created: file.getDateCreated().toLocaleDateString()
-    });
-  }
-  return fileList;
-}
-
-/**
- * Gets file content as Base64
- */
-function getFileContent(fileId) {
-  try {
-    const file = DriveApp.getFileById(fileId);
-    const blob = file.getBlob();
-    return {
-      success: true,
-      data: Utilities.base64Encode(blob.getBytes()),
-      name: file.getName(),
-      mimeType: file.getMimeType()
-    };
-  } catch (e) {
-    return { success: false, error: e.toString() };
-  }
-}
-
-/**
- * Saves grade to Google Sheet
- */
-function saveGrade(studentId, score, comment) {
-  const sheetId = PropertiesService.getScriptProperties().getProperty('SHEET_ID');
-  const ss = SpreadsheetApp.openById(sheetId);
-  const sheet = ss.getSheets()[0];
-  
-  sheet.appendRow([new Date(), studentId, "", score, comment, "Teacher"]);
-  return "Saved successfully!";
-}
-
-/**
- * Calls Poe API
- * - Supports Chunking (Accepts partial image lists)
- * - Enforces Strict 1M/1A Grading
- * - Enforces Traditional Chinese
- */
-function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
-  const apiKey = PropertiesService.getScriptProperties().getProperty('POE_API_KEY');
-  if (!apiKey) {
-    return { error: "API Key not found. Please add POE_API_KEY to Script Properties." };
-  }
-  const apiUrl = "https://api.poe.com/v1/chat/completions";
-  
-  // --- STRICT MARKING SCHEME PROMPT ---
-  const systemPrompt = `
-    You are a STRICT Math Teacher grading a specific part of a student's exam.
-    
-    **MANDATORY SCORING RULES (1M + 1A):**
-    For every question, you must identify two specific marks:
-    
-    1. **M Mark (Method):** - Award **1 mark** if the student shows the correct formula, substitution, or logical step matching the Solution Key.
-       - Award **0 marks** if the method is missing, wrong, or skipped.
-       
-    2. **A Mark (Answer):** - Award **1 mark** ONLY if the final answer is exactly correct (including units/signs).
-       - **CRITICAL:** If the Method (M) is wrong, the Answer (A) is automatically **0**. (No "lucky guesses" allowed).
-    
-    **EXAMPLE SCORING:**
-    - Correct Method + Correct Answer = **2/2** (M1 A1)
-    - Correct Method + Wrong Answer = **1/2** (M1 A0)
-    - Wrong Method + Correct Answer = **0/2** (M0 A0)
-    
-    **OUTPUT REQUIREMENTS:**
-    1. **Language:** All comments must be in **Traditional Chinese (繁體中文)**.
-    2. **Format:** Return ONLY valid JSON.
-    3. **Content:** Specifically mention "M1" or "A0" in your comments so the student knows where they lost points.
-    4. **Scope:** Grade ONLY the questions visible in this image chunk.
-    
-    **JSON STRUCTURE:**
-    {
-      "student_name": "Name (if visible)",
-      "total_score": "ignored",
-      "overall_comment": "Summary in Traditional Chinese.",
-      "questions": [
-        { "id": "Q1", "score": "X/Y", "comment": "M1 (步驟正確), A0 (計算錯誤)..." },
-        { "id": "Q2", "score": "X/Y", "comment": "M1 A1 (全對)" }
-      ]
-    }
-  `;
-  
-  const userContent = [
-    { "type": "text", "text": `Grade this exam chunk (Student ${studentIndex}) using the 1M/1A method.` }
-  ];
-  
-  // 1. Add Solution Images (Limit to 5 to save context window)
-  if (solutionImages && solutionImages.length > 0) {
-    solutionImages.slice(0, 5).forEach(img => {
-      userContent.push({
-        "type": "image_url",
-        "image_url": { "url": `data:image/jpeg;base64,${img}` }
-      });
-    });
-  }
-  
-  // 2. Add Student Images (Accept ALL images sent by client - Client handles chunking)
-  if (Array.isArray(studentImages)) {
-    studentImages.forEach(img => {
-      userContent.push({
-        "type": "image_url",
-        "image_url": { "url": `data:image/jpeg;base64,${img}` }
-      });
-    });
-  }
-  
-  const payload = {
-    "model": modelName || DEFAULT_BOT,
-    "messages": [
-      { "role": "system", "content": systemPrompt },
-      { "role": "user", "content": userContent }
-    ],
-    "temperature": 0.1 // Keep it low for strict rule-following
-  };
-  
-  const options = {
-    "method": "post",
-    "contentType": "application/json",
-    "headers": { "Authorization": `Bearer ${apiKey}` },
-    "payload": JSON.stringify(payload),
-    "muteHttpExceptions": true
-  };
-  
-  try {
-    const response = UrlFetchApp.fetch(apiUrl, options);
-    const responseCode = response.getResponseCode();
-    const responseText = response.getContentText();
-    
-    if (responseCode !== 200) {
-      return { error: `Poe API Error (${responseCode}): ${responseText}` };
-    }
-    
-    let json;
-    try {
-      json = JSON.parse(responseText);
-    } catch (e) {
-      return { error: "Invalid JSON response from Poe." };
-    }
-    
-    if (!json.choices || !json.choices[0].message) {
-      return { error: "No content generated." };
-    }
-    
-    // Robust Parsing (Extract JSON from text)
-    const textResponse = json.choices[0].message.content;
-    const jsonMatch = textResponse.match(/\{[\s\S]*\}/);
-    
-    if (!jsonMatch) {
-      return { error: "No JSON found in response: " + textResponse };
-    }
-    
-    let gradeData;
-    try {
-      gradeData = JSON.parse(jsonMatch[0]);
-    } catch (e) {
-      return { error: "JSON Parse Failed: " + e.toString() };
-    }
-
-    // --- MATH CORRECTION LOGIC (Re-calculate sum for this chunk) ---
-    if (gradeData.questions && Array.isArray(gradeData.questions)) {
-      let calculatedObtained = 0;
-      let calculatedTotal = 0;
-      let hasDenominator = false;
-
-      gradeData.questions.forEach(q => {
-        if (q.score) {
-          const parts = q.score.toString().split('/');
-          const obtained = parseFloat(parts[0]);
-          if (!isNaN(obtained)) {
-            calculatedObtained += obtained;
-          }
-          if (parts.length > 1) {
-            const possible = parseFloat(parts[1]);
-            if (!isNaN(possible)) {
-              calculatedTotal += possible;
-              hasDenominator = true;
-            }
-          }
+    // Navigation
+    function showTab(tabId) {
+        document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+        document.querySelectorAll('.nav-btn').forEach(el => el.classList.remove('active'));
+        document.getElementById(tabId).classList.add('active');
+        document.querySelector(`button[onclick="showTab('${tabId}')"]`).classList.add('active');
+        if (tabId === 'dashboard') {
+            loadFiles();
         }
-      });
-
-      // Force the total score to be the sum of questions
-      if (hasDenominator && calculatedTotal > 0) {
-        gradeData.total_score = `${calculatedObtained}/${calculatedTotal}`;
-      } else {
-        gradeData.total_score = `${calculatedObtained}`;
-      }
     }
-    // -------------------------------------------------------------
 
-    return gradeData;
-    
-  } catch (e) {
-    console.error("Critical Error in callPoeAPI:", e);
-    return { error: "Connection Failed. Details: " + e.toString() };
-  }
-}
+    // File Upload
+    async function handleUpload() {
+        const studentFile = document.getElementById('studentFile').files[0];
+        const solutionFile = document.getElementById('solutionFile').files[0];
+        const statusDiv = document.getElementById('uploadStatus');
+        const ppsInput = document.getElementById('pagesPerStudent');
 
-/**
- * Generates a PDF Report from the grading data
- */
-function createPdfReport(gradingData) {
-  let html = `
-    <html>
-      <head>
-        <style>
-          body { font-family: 'Microsoft JhengHei', sans-serif; padding: 40px; line-height: 1.6; }
-          .student-section { margin-bottom: 40px; page-break-inside: avoid; border-bottom: 1px dashed #ccc; padding-bottom: 20px; }
-          .header { font-size: 1.2em; font-weight: bold; margin-bottom: 10px; }
-          .score { font-weight: bold; color: #d93025; }
-          .label { font-weight: bold; }
-          .question-item { margin-left: 20px; }
-        </style>
-      </head>
-      <body>
-  `;
-  
-  gradingData.forEach((item, index) => {
-    const safeName = escapeHtml(item.student_name || "Student " + (index + 1));
-    const safeScore = escapeHtml(item.total_score);
-    const safeComment = escapeHtml(item.overall_comment);
-    
-    let qHtml = "";
-    if (item.questions && item.questions.length > 0) {
-      item.questions.forEach(q => {
-        const safeId = escapeHtml(q.id);
-        const safeQScore = escapeHtml(q.score);
-        const safeQComment = escapeHtml(q.comment);
-        qHtml += `<div class="question-item"><strong>${safeId}:</strong> (分數: ${safeQScore}) (評語: ${safeQComment})</div>`;
-      });
-    } else {
-      qHtml = "<div class='question-item'>No specific questions found.</div>";
+        if (!studentFile) {
+            statusDiv.textContent = "Please select a Student PDF.";
+            return;
+        }
+
+        statusDiv.textContent = "Reading files...";
+
+        // 1. Read Student PDF into memory
+        const rawBuffer = await studentFile.arrayBuffer();
+        masterPdfBytes = new Uint8Array(rawBuffer);
+
+        // 1b. Calculate Total Students automatically
+        try {
+            const loadingTask = pdfjsLib.getDocument({ data: masterPdfBytes.slice() });
+            const pdf = await loadingTask.promise;
+            const totalPages = pdf.numPages;
+            const pps = parseInt(ppsInput.value) || 1;
+            const calculatedStudents = Math.floor(totalPages / pps);
+            document.getElementById('totalStudents').value = calculatedStudents;
+            console.log(`PDF loaded: ${totalPages} pages. Est. Students: ${calculatedStudents}`);
+        } catch (e) {
+            console.error("Error counting pages:", e);
+        }
+
+        // 2. Read Solution PDF (if provided)
+        if (solutionFile) {
+            statusDiv.textContent = "Processing Solution Key...";
+            const solutionBytes = await solutionFile.arrayBuffer();
+            const solutionUint8 = new Uint8Array(solutionBytes);
+            solutionImagesBase64 = await convertPdfToImages(solutionUint8);
+        } else {
+            solutionImagesBase64 = [];
+        }
+
+        // 3. Upload Student PDF to Drive
+        statusDiv.textContent = "Uploading Student PDF to Drive...";
+        const reader = new FileReader();
+        reader.onload = function (e) {
+            const data = {
+                data: e.target.result.split(',')[1],
+                fileName: studentFile.name,
+                mimeType: studentFile.type
+            };
+            google.script.run
+                .withSuccessHandler(function (res) {
+                    if (res.success) {
+                        statusDiv.textContent = "Upload Complete!";
+                        loadFiles(); // Refresh dashboard
+                        openGrading(res.url, res.fileId, res.name, true);
+                    } else {
+                        statusDiv.textContent = "Error: " + res.error;
+                    }
+                })
+                .uploadFile(data);
+        };
+        reader.readAsDataURL(studentFile);
     }
-    html += `
-      <div class="student-section">
-        <div class="header">學生 (${index + 1}): ${safeName}</div>
-        <div><span class="label">分數:</span> <span class="score">${safeScore}</span></div>
-        <div><span class="label">整體評語:</span> ${safeComment}</div>
-        <div><span class="label">細項評語:</span></div>
-        ${qHtml}
-      </div>
-    `;
-  });
-  
-  html += `</body></html>`;
-  
-  const blob = HtmlService.createHtmlOutput(html).getAs(MimeType.PDF);
-  blob.setName(`Math_Exam_Report_${new Date().toLocaleDateString()}.pdf`);
-  
-  const folder = getOrCreateFolder();
-  const file = folder.createFile(blob);
-  
-  return file.getUrl();
-}
 
-/**
- * Helper to escape HTML to prevent XSS
- */
-function escapeHtml(text) {
-  if (!text) return "";
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
+    // Dashboard: Load Files
+    function loadFiles() {
+        const list = document.getElementById('fileList');
+        list.innerHTML = "Loading...";
+        google.script.run
+            .withSuccessHandler(function (files) {
+                list.innerHTML = "";
+                if (files.length === 0) {
+                    list.innerHTML = "<p>No files found.</p>";
+                    return;
+                }
+                files.forEach(file => {
+                    const item = document.createElement('div');
+                    item.className = 'file-item';
+                    const nameEl = document.createElement('strong');
+                    nameEl.textContent = file.name;
+                    const dateEl = document.createElement('small');
+                    dateEl.textContent = file.created;
+                    dateEl.style.display = 'block';
+                    
+                    // Grade Button
+                    const gradeBtn = document.createElement('button');
+                    gradeBtn.textContent = 'Grade This';
+                    gradeBtn.onclick = () => openGrading(file.url, file.id, file.name);
+                    
+                    // Solution Button
+                    const solBtn = document.createElement('button');
+                    solBtn.textContent = 'Use as Solution';
+                    solBtn.className = 'secondary-btn';
+                    solBtn.style.marginTop = '5px';
+                    solBtn.style.fontSize = '0.8rem';
+                    solBtn.onclick = () => loadSolutionFromDrive(file.id, file.name);
+                    
+                    item.appendChild(nameEl);
+                    item.appendChild(dateEl);
+                    item.appendChild(document.createElement('br'));
+                    item.appendChild(gradeBtn);
+                    item.appendChild(solBtn);
+                    list.appendChild(item);
+                });
+            })
+            .getDriveFiles();
+    }
+
+    // Load Solution from Drive
+    function loadSolutionFromDrive(fileId, fileName) {
+        if (!confirm(`Load "${fileName}" as the Solution Key?`)) return;
+        google.script.run
+            .withSuccessHandler(async function (res) {
+                if (res.success) {
+                    const binaryString = atob(res.data);
+                    const bytes = new Uint8Array(binaryString.length);
+                    for (let i = 0; i < binaryString.length; i++) {
+                        bytes[i] = binaryString.charCodeAt(i);
+                    }
+                    solutionImagesBase64 = await convertPdfToImages(bytes);
+                    const infoBox = document.querySelector('.info-box');
+                    alert(`Solution Key Loaded: ${fileName} (${solutionImagesBase64.length} pages)`);
+                } else {
+                    alert("Error loading solution: " + res.error);
+                }
+            })
+            .getFileContent(fileId);
+    }
+
+    // Open Grading Tab
+    function openGrading(url, id, name, isNewUpload = false) {
+        currentFileUrl = url;
+        currentFileId = id;
+        
+        const inputVal = document.getElementById('pagesPerStudent').value;
+        pagesPerStudent = parseInt(inputVal) || 1;
+        
+        currentStudentIndex = 1;
+        updateStudentView();
+        
+        const embedUrl = url.replace('/view', '/preview');
+        document.getElementById('pdfFrame').src = embedUrl;
+        showTab('grading');
+        
+        if (!isNewUpload) {
+            const statusDiv = document.getElementById('gradeStatus');
+            statusDiv.textContent = "Loading PDF from Drive...";
+            google.script.run
+                .withSuccessHandler(function (res) {
+                    if (res.success) {
+                        const binaryString = atob(res.data);
+                        const bytes = new Uint8Array(binaryString.length);
+                        for (let i = 0; i < binaryString.length; i++) {
+                            bytes[i] = binaryString.charCodeAt(i);
+                        }
+                        masterPdfBytes = bytes;
+                        statusDiv.textContent = "PDF Loaded.";
+                        pdfjsLib.getDocument({ data: masterPdfBytes.slice() }).promise.then(pdf => {
+                            const total = Math.floor(pdf.numPages / pagesPerStudent);
+                            document.getElementById('totalStudents').value = total;
+                        });
+                    } else {
+                        alert("Error loading PDF: " + res.error);
+                        statusDiv.textContent = "Error loading PDF.";
+                    }
+                })
+                .getFileContent(id);
+        }
+    }
+
+    function updateStudentView() {
+        document.getElementById('studentLabel').textContent = `Student ${currentStudentIndex}`;
+        const startPage = (currentStudentIndex - 1) * pagesPerStudent + 1;
+        const endPage = startPage + pagesPerStudent - 1;
+        document.getElementById('pageGuide').textContent = `Pages ${startPage}-${endPage}`;
+        
+        document.getElementById('scoreInput').value = "";
+        document.getElementById('commentInput').value = "";
+        document.getElementById('gradeStatus').textContent = "";
+    }
+
+    function prevStudent() {
+        if (currentStudentIndex > 1) {
+            currentStudentIndex--;
+            updateStudentView();
+        }
+    }
+
+    function nextStudent() {
+        currentStudentIndex++;
+        updateStudentView();
+    }
+
+    // Helper: Extract pages for a specific student
+    async function extractStudentPdfBase64(studentIndex) {
+        if (!masterPdfBytes) {
+            throw new Error("Master PDF not loaded. Please upload the file again in this session.");
+        }
+        const pdfDoc = await PDFLib.PDFDocument.load(masterPdfBytes.slice());
+        const newPdf = await PDFLib.PDFDocument.create();
+        const startPage = (studentIndex - 1) * pagesPerStudent;
+        const endPage = startPage + pagesPerStudent;
+        
+        const pageIndices = [];
+        for (let i = startPage; i < endPage; i++) {
+            if (i < pdfDoc.getPageCount()) pageIndices.push(i);
+        }
+        if (pageIndices.length === 0) {
+            throw new Error("Page range out of bounds.");
+        }
+        
+        const copiedPages = await newPdf.copyPages(pdfDoc, pageIndices);
+        copiedPages.forEach(page => newPdf.addPage(page));
+        const pdfBytes = await newPdf.save();
+        return uint8ToBase64(pdfBytes);
+    }
+
+    function uint8ToBase64(u8Arr) {
+        let CHUNK_SIZE = 0x8000;
+        let index = 0;
+        let length = u8Arr.length;
+        let result = '';
+        let slice;
+        while (index < length) {
+            slice = u8Arr.subarray(index, Math.min(index + CHUNK_SIZE, length));
+            result += String.fromCharCode.apply(null, slice);
+            index += CHUNK_SIZE;
+        }
+        return btoa(result);
+    }
+
+    // Helper: Convert PDF to Images (THE SWEET SPOT OPTIMIZATION)
+    async function convertPdfToImages(pdfBytes) {
+        const loadingTask = pdfjsLib.getDocument({ data: pdfBytes });
+        const pdf = await loadingTask.promise;
+        const numPages = pdf.numPages;
+        const images = [];
+        
+        for (let i = 1; i <= numPages; i++) {
+            const page = await pdf.getPage(i);
+            
+            // --- SWEET SPOT SETTINGS ---
+            // Scale 2.0: High enough for math symbols, low enough for speed
+            const scale = 2.0; 
+            
+            const viewport = page.getViewport({ scale: scale });
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            canvas.height = viewport.height;
+            canvas.width = viewport.width;
+            
+            await page.render({ canvasContext: context, viewport: viewport }).promise;
+            
+            // Quality 0.6: Reduces file size by ~60% without visible artifacts
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
+            images.push(dataUrl.split(',')[1]);
+        }
+        return images;
+    }
+
+    // ==========================================
+    // CHUNKING & GRADING LOGIC (With Smart Merging)
+    // ==========================================
+    async function runAutoGrade(isBatch = false) {
+        const btn = document.querySelector('.magic-btn');
+        const statusDiv = document.getElementById('gradeStatus');
+        const commentBox = document.getElementById('commentInput');
+        const scoreBox = document.getElementById('scoreInput');
+        const selectedModel = document.getElementById('modelSelect').value;
+
+        if (solutionImagesBase64.length === 0) {
+            if (!confirm("⚠️ No Solution Key loaded. Proceed anyway?")) return null;
+        }
+
+        if (!isBatch) {
+            btn.innerHTML = '<span class="spinner"></span> Grading...';
+            btn.disabled = true;
+        }
+
+        try {
+            statusDiv.textContent = `Preparing Student ${currentStudentIndex}...`;
+            
+            // 1. Get Student PDF & Convert to Images
+            const studentPdfBase64 = await extractStudentPdfBase64(currentStudentIndex);
+            const binaryString = atob(studentPdfBase64);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
+            
+            const allImages = await convertPdfToImages(bytes);
+            
+            // 2. Setup Chunking
+            const CHUNK_SIZE = 3;
+            const totalChunks = Math.ceil(allImages.length / CHUNK_SIZE);
+            
+            let mergedResult = {
+                student_name: `Student ${currentStudentIndex}`,
+                questions: [],          // We will manage this list carefully
+                overall_comments: []
+            };
+
+            // 3. Process Chunks Sequentially
+            for (let i = 0; i < totalChunks; i++) {
+                const start = i * CHUNK_SIZE;
+                const end = start + CHUNK_SIZE;
+                const chunkImages = allImages.slice(start, end);
+                
+                statusDiv.textContent = `Analyzing Part ${i + 1} of ${totalChunks} (Model: ${selectedModel})...`;
+                
+                const chunkData = await new Promise((resolve, reject) => {
+                    google.script.run
+                        .withSuccessHandler(resolve)
+                        .withFailureHandler(reject)
+                        .callPoeAPI(chunkImages, solutionImagesBase64, currentStudentIndex, selectedModel);
+                });
+
+                if (chunkData && !chunkData.error) {
+                    
+                    // --- SMART GLUING LOGIC START ---
+                    
+                    // 1. Merge Comments (Simple Append)
+                    if (chunkData.overall_comment) {
+                        mergedResult.overall_comments.push(chunkData.overall_comment);
+                    }
+
+                    // 2. Merge Questions (Deduplication Strategy)
+                    if (chunkData.questions) {
+                        chunkData.questions.forEach(newQ => {
+                            // Normalize ID (remove spaces, e.g., "Q 1" -> "Q1")
+                            const newId = newQ.id.replace(/\s+/g, '').toUpperCase();
+                            
+                            // Check if we already have this question
+                            const existingIndex = mergedResult.questions.findIndex(q => 
+                                q.id.replace(/\s+/g, '').toUpperCase() === newId
+                            );
+
+                            if (existingIndex === -1) {
+                                // Case A: New Question. Add it.
+                                mergedResult.questions.push(newQ);
+                            } else {
+                                // Case B: Duplicate ID found. Pick the "Better" one.
+                                const existingQ = mergedResult.questions[existingIndex];
+                                
+                                // Helper to check if a score is "Real" (contains numbers)
+                                const isRealScore = (str) => /\d/.test(str); 
+                                
+                                const newHasScore = isRealScore(newQ.score);
+                                const oldHasScore = isRealScore(existingQ.score);
+
+                                if (newHasScore && !oldHasScore) {
+                                    // Upgrade: The new chunk found the real answer, overwrite the old "Empty" placeholder.
+                                    mergedResult.questions[existingIndex] = newQ;
+                                } 
+                                else if (newHasScore && oldHasScore) {
+                                    // Conflict: Both chunks graded it. 
+                                    // Strategy: Append the comments so the teacher sees both opinions.
+                                    mergedResult.questions[existingIndex].comment += ` | ${newQ.comment}`;
+                                }
+                            }
+                        });
+                    }
+                    // --- SMART GLUING LOGIC END ---
+                    
+                } else {
+                    console.error("Chunk Error:", chunkData);
+                }
+            }
+
+            // 4. Sort Questions Naturally (Q1, Q2, Q3...)
+            mergedResult.questions.sort((a, b) => {
+                const numA = parseInt(a.id.replace(/\D/g, '')) || 0;
+                const numB = parseInt(b.id.replace(/\D/g, '')) || 0;
+                return numA - numB;
+            });
+
+            // 5. Calculate Final Score (Summation)
+            let finalObtained = 0;
+            let finalTotal = 0;
+            let hasDenom = false;
+
+            mergedResult.questions.forEach(q => {
+                if (q.score) {
+                    const parts = q.score.toString().split('/');
+                    const val = parseFloat(parts[0]);
+                    if (!isNaN(val)) finalObtained += val;
+                    if (parts.length > 1) {
+                        const max = parseFloat(parts[1]);
+                        if (!isNaN(max)) { finalTotal += max; hasDenom = true; }
+                    }
+                }
+            });
+
+            const finalScoreStr = (hasDenom && finalTotal > 0) ? `${finalObtained}/${finalTotal}` : `${finalObtained}`;
+            const finalCommentStr = mergedResult.overall_comments.join("\n---\n");
+
+            // 6. Update UI
+            scoreBox.value = finalScoreStr;
+            commentBox.value = finalCommentStr;
+            statusDiv.textContent = "Grading Complete!";
+
+            if (!isBatch) {
+                btn.innerHTML = "✨ Grade Current Student";
+                btn.disabled = false;
+            }
+
+            // 7. Save to Sheet
+            google.script.run.saveGrade(mergedResult.student_name, finalScoreStr, finalCommentStr);
+            
+            const gradeRecord = {
+                student_name: mergedResult.student_name,
+                total_score: finalScoreStr,
+                overall_comment: finalCommentStr,
+                questions: mergedResult.questions
+            };
+            
+            const existingIdx = allGrades.findIndex(g => g.student_name === gradeRecord.student_name);
+            if (existingIdx >= 0) allGrades[existingIdx] = gradeRecord;
+            else allGrades.push(gradeRecord);
+
+        } catch (e) {
+            console.error(e);
+            if (!isBatch) {
+                btn.innerHTML = "✨ Grade Current Student";
+                btn.disabled = false;
+            }
+            statusDiv.textContent = "Error: " + e.message;
+            alert("Error: " + e.message);
+        }
+    }
+
+    async function gradeAll() {
+        const total = parseInt(document.getElementById('totalStudents').value) || 1;
+        const statusDiv = document.getElementById('gradeStatus');
+        
+        if (!currentFileId) {
+            alert("Please select a file first.");
+            return;
+        }
+        if (!confirm(`Are you sure you want to auto-grade ${total} students?`)) return;
+        
+        allGrades = [];
+        for (let i = 1; i <= total; i++) {
+            currentStudentIndex = i;
+            updateStudentView();
+            statusDiv.textContent = `Batch Processing: Student ${i} of ${total}...`;
+            await runAutoGrade(true);
+            await new Promise(r => setTimeout(r, 1000));
+        }
+        statusDiv.textContent = "Batch Grading Complete!";
+        alert("Batch Grading Complete!");
+    }
+
+    function downloadCsv() {
+        if (allGrades.length === 0) {
+            alert("No grades available.");
+            return;
+        }
+        let qKeys = new Set();
+        allGrades.forEach(g => {
+            if (g.questions) g.questions.forEach(q => qKeys.add(q.id));
+        });
+        const qHeaders = Array.from(qKeys).sort();
+        let csv = "Student,Total Score,Overall Comment," + qHeaders.join(",") + "\n";
+        allGrades.forEach(g => {
+            let row = `"${g.student_name}","${g.total_score}","${g.overall_comment.replace(/"/g, '""')}"`;
+            qHeaders.forEach(qId => {
+                const q = g.questions ? g.questions.find(item => item.id === qId) : null;
+                const qStr = q ? `${q.score} (${q.comment.replace(/"/g, '""')})` : "";
+                row += `,"${qStr}"`;
+            });
+            csv += row + "\n";
+        });
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = "grades.csv";
+        a.click();
+    }
+
+    function downloadPdf() {
+        if (allGrades.length === 0) {
+            alert("No grades available.");
+            return;
+        }
+        const statusDiv = document.getElementById('gradeStatus');
+        statusDiv.textContent = "Generating PDF...";
+        google.script.run
+            .withSuccessHandler(function (url) {
+                statusDiv.textContent = "PDF Ready!";
+                window.open(url, '_blank');
+            })
+            .createPdfReport(allGrades);
+    }
+
+    function saveGrade() {
+        const score = document.getElementById('scoreInput').value;
+        const comment = document.getElementById('commentInput').value;
+        const studentId = `Student_${currentStudentIndex}`;
+        google.script.run
+            .withSuccessHandler(function (msg) {
+                alert(msg);
+            })
+            .saveGrade(studentId, score, comment);
+    }
+</script>
