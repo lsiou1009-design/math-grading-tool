@@ -149,7 +149,7 @@ function saveGrade(studentId, score, comment) {
 }
 
 /**
- * Calls Poe API - WITH MATH CORRECTION
+ * Calls Poe API - WITH IMPROVED SYSTEM PROMPT & MATH CORRECTION
  */
 function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
   const apiKey = PropertiesService.getScriptProperties().getProperty('POE_API_KEY');
@@ -158,47 +158,42 @@ function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
   }
   const apiUrl = "https://api.poe.com/v1/chat/completions";
   
+  // --- UPDATED SYSTEM PROMPT: FORCE "THINKING" ---
   const systemPrompt = `
     You are a STRICT math teacher grading a student's exam.
     
     **INPUTS:**
-    1. **STUDENT WORK**: Images of the student's handwritten answers.
-    2. **SOLUTION KEY**: Images of the official marking scheme.
+    1. **STUDENT WORK**: Images of handwritten math.
+    2. **SOLUTION KEY**: Images of the marking scheme.
     
-    **MARKING SCHEME INSTRUCTIONS (M/A Marks):**
-    - **M (Method) Marks**: Award these if the student shows the correct method or step.
-    - **A (Answer) Marks**: Award these ONLY if the final answer is EXACTLY correct as per the solution.
-    - **ZERO TOLERANCE for A Marks**: If the student's final answer does not match the solution (and is not a mathematically equivalent form like 0.5 vs 1/2), you MUST NOT award the A mark.
-    - **Follow the Solution Key STRICTLY**. If the solution says "M1 A1", look for that specific step and answer.
+    **YOUR PROCESS (CRITICAL):**
+    Do not output JSON immediately. You must "think" before you grade.
+    For each question, follow these steps internally:
+    1. **TRANSCRIBE**: Write out what the student actually wrote (e.g., "Student wrote x^2 + 5").
+    2. **COMPARE**: Check that specific step against the Solution Key image.
+    3. **VERIFY**: Did they simply copy the final answer? Did they show the "M" (Method) steps?
+    4. **DECIDE**: Assign marks based strictly on the scheme.
     
-    **CRITICAL GRADING RULES:**
-    1. **Do not be generous.** If a step is missing or wrong, deduct the mark.
-    2. **Check every question.** Do not skip questions.
-    3. **If the answer is wrong, the A mark is 0.** No exceptions.
+    **GRADING RULES:**
+    - **M Marks**: Award ONLY if the method is visible and correct.
+    - **A Marks**: Award ONLY if the final answer matches the solution exactly.
+    - If the student skips steps required by the Solution Key, deduct the M mark.
     
-    **YOUR TASK:**
-    1. **TRANSCRIBE**: Read the student's work.
-    2. **COMPARE**: Check against the provided Solution Key.
-    3. **GRADE**: Assign a score based on the M/A marks.
-    4. **COMMENT**: Write a short comment in **Traditional Chinese (繁體中文)** explaining where marks were lost.
+    **OUTPUT FORMAT:**
+    After your analysis, output the results in this **EXACT JSON** format inside a code block:
     
-    **OUTPUT REQUIREMENTS:**
-    - **Format**: You MUST return the exact JSON structure below.
-    
-    **JSON STRUCTURE:**
+    \`\`\`json
     {
-      "student_name": "Name found on paper (or Student ${studentIndex})",
-      "total_score": "X/100",
-      "overall_comment": "Summary of performance (max 50 words)",
+      "student_name": "Student Name",
+      "overall_comment": "Summary...",
       "questions": [
-        { "id": "Q1", "score": "X/Y", "comment": "Feedback on M/A marks (max 20 words)" },
-        { "id": "Q2", "score": "X/Y", "comment": "Feedback on M/A marks (max 20 words)" }
+        { "id": "Q1", "score": "X/Y", "comment": "Missing step 2..." },
+        { "id": "Q2", "score": "X/Y", "comment": "Correct." }
       ]
     }
-    
-    If the page is blank, score 0 and return empty questions array.
-    RETURN ONLY JSON. NO MARKDOWN.
+    \`\`\`
   `;
+  // ------------------------------------------------
   
   const userContent = [
     { "type": "text", "text": `Grade this student's work (Student ${studentIndex}).` }
@@ -287,9 +282,7 @@ function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
       return { error: "JSON Parse Failed: " + e.toString() };
     }
 
-    // ======================================================
-    // START: MATH CORRECTION LOGIC
-    // ======================================================
+    // MATH CORRECTION LOGIC
     if (gradeData.questions && Array.isArray(gradeData.questions)) {
       let calculatedObtained = 0;
       let calculatedTotal = 0;
@@ -297,15 +290,11 @@ function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
 
       gradeData.questions.forEach(q => {
         if (q.score) {
-          // Parse score string like "5/10" or "5"
           const parts = q.score.toString().split('/');
           const obtained = parseFloat(parts[0]);
-          
           if (!isNaN(obtained)) {
             calculatedObtained += obtained;
           }
-          
-          // Check for denominator (Max score)
           if (parts.length > 1) {
             const possible = parseFloat(parts[1]);
             if (!isNaN(possible)) {
@@ -316,16 +305,12 @@ function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
         }
       });
 
-      // Overwrite the AI's total_score with our calculated one
       if (hasDenominator && calculatedTotal > 0) {
         gradeData.total_score = `${calculatedObtained}/${calculatedTotal}`;
       } else {
         gradeData.total_score = `${calculatedObtained}`;
       }
     }
-    // ======================================================
-    // END: MATH CORRECTION LOGIC
-    // ======================================================
 
     return gradeData;
     
