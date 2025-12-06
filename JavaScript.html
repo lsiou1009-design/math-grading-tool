@@ -1,0 +1,423 @@
+<script>
+    // State
+    let currentStudentIndex = 1;
+    let pagesPerStudent = 1;
+    let currentFileId = "";
+    let currentFileUrl = "";
+    let allGrades = [];
+    let masterPdfBytes = null; // Store as Uint8Array
+    let solutionImagesBase64 = []; // Store solution images
+    // Navigation
+    function showTab(tabId) {
+        document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+        document.querySelectorAll('.nav-btn').forEach(el => el.classList.remove('active'));
+        document.getElementById(tabId).classList.add('active');
+        document.querySelector(`button[onclick="showTab('${tabId}')"]`).classList.add('active');
+        if (tabId === 'dashboard') {
+            loadFiles();
+        }
+    }
+    // File Upload
+    async function handleUpload() {
+        const studentFile = document.getElementById('studentFile').files[0];
+        const solutionFile = document.getElementById('solutionFile').files[0];
+        const statusDiv = document.getElementById('uploadStatus');
+        const ppsInput = document.getElementById('pagesPerStudent');
+        if (!studentFile) {
+            statusDiv.textContent = "Please select a Student PDF.";
+            return;
+        }
+        statusDiv.textContent = "Reading files...";
+        // 1. Read Student PDF into memory
+        const rawBuffer = await studentFile.arrayBuffer();
+        masterPdfBytes = new Uint8Array(rawBuffer); // Store as Uint8Array
+        // 1b. Calculate Total Students automatically
+        try {
+            // Clone buffer to prevent detachment by pdf.js worker
+            const loadingTask = pdfjsLib.getDocument({ data: masterPdfBytes.slice() });
+            const pdf = await loadingTask.promise;
+            const totalPages = pdf.numPages;
+            const pps = parseInt(ppsInput.value) || 1;
+            const calculatedStudents = Math.floor(totalPages / pps);
+            document.getElementById('totalStudents').value = calculatedStudents;
+            console.log(`PDF loaded: ${totalPages} pages. Est. Students: ${calculatedStudents}`);
+        } catch (e) {
+            console.error("Error counting pages:", e);
+        }
+        // 2. Read Solution PDF (if provided)
+        if (solutionFile) {
+            statusDiv.textContent = "Processing Solution Key...";
+            const solutionBytes = await solutionFile.arrayBuffer();
+            const solutionUint8 = new Uint8Array(solutionBytes);
+            solutionImagesBase64 = await convertPdfToImages(solutionUint8);
+        } else {
+            solutionImagesBase64 = [];
+        }
+        // 3. Upload Student PDF to Drive
+        statusDiv.textContent = "Uploading Student PDF to Drive...";
+        const reader = new FileReader();
+        reader.onload = function (e) {
+            const data = {
+                data: e.target.result.split(',')[1],
+                fileName: studentFile.name,
+                mimeType: studentFile.type
+            };
+            google.script.run
+                .withSuccessHandler(function (res) {
+                    if (res.success) {
+                        statusDiv.textContent = "Upload Complete!";
+                        loadFiles(); // Refresh dashboard
+                        // Auto-navigate to Grading
+                        openGrading(res.url, res.fileId, res.name, true);
+                    } else {
+                        statusDiv.textContent = "Error: " + res.error;
+                    }
+                })
+                .uploadFile(data);
+        };
+        reader.readAsDataURL(studentFile);
+    }
+    // Dashboard: Load Files
+    function loadFiles() {
+        const list = document.getElementById('fileList');
+        list.innerHTML = "Loading...";
+        google.script.run
+            .withSuccessHandler(function (files) {
+                list.innerHTML = "";
+                if (files.length === 0) {
+                    list.innerHTML = "<p>No files found.</p>";
+                    return;
+                }
+                files.forEach(file => {
+                    const item = document.createElement('div');
+                    item.className = 'file-item';
+                    const nameEl = document.createElement('strong');
+                    nameEl.textContent = file.name;
+                    const dateEl = document.createElement('small');
+                    dateEl.textContent = file.created;
+                    dateEl.style.display = 'block';
+                    // Grade Button
+                    const gradeBtn = document.createElement('button');
+                    gradeBtn.textContent = 'Grade This';
+                    gradeBtn.onclick = () => openGrading(file.url, file.id, file.name);
+                    // Solution Button
+                    const solBtn = document.createElement('button');
+                    solBtn.textContent = 'Use as Solution';
+                    solBtn.className = 'secondary-btn';
+                    solBtn.style.marginTop = '5px';
+                    solBtn.style.fontSize = '0.8rem';
+                    solBtn.onclick = () => loadSolutionFromDrive(file.id, file.name);
+                    item.appendChild(nameEl);
+                    item.appendChild(dateEl);
+                    item.appendChild(document.createElement('br'));
+                    item.appendChild(gradeBtn);
+                    item.appendChild(solBtn);
+                    list.appendChild(item);
+                });
+            })
+            .getDriveFiles();
+    }
+    // Load Solution from Drive
+    function loadSolutionFromDrive(fileId, fileName) {
+        const statusDiv = document.getElementById('uploadStatus');
+        if (!confirm(`Load "${fileName}" as the Solution Key?`)) return;
+        google.script.run
+            .withSuccessHandler(async function (res) {
+                if (res.success) {
+                    const binaryString = atob(res.data);
+                    const bytes = new Uint8Array(binaryString.length);
+                    for (let i = 0; i < binaryString.length; i++) {
+                        bytes[i] = binaryString.charCodeAt(i);
+                    }
+                    solutionImagesBase64 = await convertPdfToImages(bytes);
+                    // Update UI Indicator
+                    const infoBox = document.querySelector('.info-box');
+                    if (infoBox) infoBox.innerHTML = `<strong>Model:</strong> Poe (Claude-Opus-4.5) <br> <strong>Solution:</strong> Loaded (${solutionImagesBase64.length} pages)`;
+                    alert(`Solution Key Loaded: ${fileName} (${solutionImagesBase64.length} pages)`);
+                } else {
+                    alert("Error loading solution: " + res.error);
+                }
+            })
+            .getFileContent(fileId);
+    }
+    // Open Grading Tab
+    function openGrading(url, id, name, isNewUpload = false) {
+        currentFileUrl = url;
+        currentFileId = id;
+        // Get config
+        const inputVal = document.getElementById('pagesPerStudent').value;
+        pagesPerStudent = parseInt(inputVal) || 1;
+        // Setup View
+        currentStudentIndex = 1;
+        updateStudentView();
+        // Embed PDF
+        const embedUrl = url.replace('/view', '/preview');
+        document.getElementById('pdfFrame').src = embedUrl;
+        showTab('grading');
+        // If it's a new upload, we already have masterPdfBytes in memory.
+        // If not, we need to fetch it from Drive.
+        if (!isNewUpload) {
+            const statusDiv = document.getElementById('gradeStatus');
+            statusDiv.textContent = "Loading PDF from Drive...";
+            google.script.run
+                .withSuccessHandler(function (res) {
+                    if (res.success) {
+                        const binaryString = atob(res.data);
+                        const bytes = new Uint8Array(binaryString.length);
+                        for (let i = 0; i < binaryString.length; i++) {
+                            bytes[i] = binaryString.charCodeAt(i);
+                        }
+                        masterPdfBytes = bytes; // Store as Uint8Array
+                        statusDiv.textContent = "PDF Loaded.";
+                        // Recalculate total students for loaded file
+                        // Clone buffer to prevent detachment
+                        pdfjsLib.getDocument({ data: masterPdfBytes.slice() }).promise.then(pdf => {
+                            const total = Math.floor(pdf.numPages / pagesPerStudent);
+                            document.getElementById('totalStudents').value = total;
+                        });
+                    } else {
+                        alert("Error loading PDF: " + res.error);
+                        statusDiv.textContent = "Error loading PDF.";
+                    }
+                })
+                .getFileContent(id);
+        }
+    }
+    function updateStudentView() {
+        // Update Label
+        document.getElementById('studentLabel').textContent = `Student ${currentStudentIndex}`;
+        // Update Page Guide (Visual hint for teacher)
+        const startPage = (currentStudentIndex - 1) * pagesPerStudent + 1;
+        const endPage = startPage + pagesPerStudent - 1;
+        document.getElementById('pageGuide').textContent = `Pages ${startPage}-${endPage}`;
+        // Clear inputs for new student (or load if we had persistence)
+        document.getElementById('scoreInput').value = "";
+        document.getElementById('commentInput').value = "";
+        document.getElementById('gradeStatus').textContent = "";
+    }
+    function prevStudent() {
+        if (currentStudentIndex > 1) {
+            currentStudentIndex--;
+            updateStudentView();
+        }
+    }
+    function nextStudent() {
+        currentStudentIndex++;
+        updateStudentView();
+    }
+    // Helper: Extract pages for a specific student
+    async function extractStudentPdfBase64(studentIndex) {
+        if (!masterPdfBytes) {
+            throw new Error("Master PDF not loaded. Please upload the file again in this session.");
+        }
+        // Clone buffer to prevent detachment
+        const pdfDoc = await PDFLib.PDFDocument.load(masterPdfBytes.slice());
+        const newPdf = await PDFLib.PDFDocument.create();
+        const startPage = (studentIndex - 1) * pagesPerStudent; // 0-indexed
+        const endPage = startPage + pagesPerStudent;
+        // Copy pages
+        const pageIndices = [];
+        for (let i = startPage; i < endPage; i++) {
+            if (i < pdfDoc.getPageCount()) pageIndices.push(i);
+        }
+        if (pageIndices.length === 0) {
+            throw new Error("Page range out of bounds.");
+        }
+        const copiedPages = await newPdf.copyPages(pdfDoc, pageIndices);
+        copiedPages.forEach(page => newPdf.addPage(page));
+        const pdfBytes = await newPdf.save();
+        return uint8ToBase64(pdfBytes);
+    }
+    function uint8ToBase64(u8Arr) {
+        let CHUNK_SIZE = 0x8000;
+        let index = 0;
+        let length = u8Arr.length;
+        let result = '';
+        let slice;
+        while (index < length) {
+            slice = u8Arr.subarray(index, Math.min(index + CHUNK_SIZE, length));
+            result += String.fromCharCode.apply(null, slice);
+            index += CHUNK_SIZE;
+        }
+        return btoa(result);
+    }
+    // Helper: Convert ALL PDF pages to Base64 Images (JPEG) using pdf.js
+    async function convertPdfToImages(pdfBytes) {
+        const loadingTask = pdfjsLib.getDocument({ data: pdfBytes });
+        const pdf = await loadingTask.promise;
+        const numPages = pdf.numPages;
+        const images = [];
+        for (let i = 1; i <= numPages; i++) {
+            const page = await pdf.getPage(i);
+            const scale = 1.5; // Good balance of quality and size
+            const viewport = page.getViewport({ scale: scale });
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            canvas.height = viewport.height;
+            canvas.width = viewport.width;
+            await page.render({
+                canvasContext: context,
+                viewport: viewport
+            }).promise;
+            // Add base64 image (remove prefix)
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+            images.push(dataUrl.split(',')[1]);
+        }
+        return images;
+    }
+    // Auto-Grade (Splits PDF -> Images -> Poe API)
+    async function runAutoGrade(isBatch = false) {
+        const btn = document.querySelector('.magic-btn');
+        const statusDiv = document.getElementById('gradeStatus');
+        const commentBox = document.getElementById('commentInput');
+        const scoreBox = document.getElementById('scoreInput');
+        // Validation: Check for Solution Key
+        if (solutionImagesBase64.length === 0) {
+            if (!confirm("⚠️ WARNING: No Solution Key loaded.\nThe AI will grade based on general knowledge, which may be inaccurate.\n\nDo you want to proceed?")) {
+                return null;
+            }
+        }
+        // UI Loading State
+        if (!isBatch) {
+            btn.innerHTML = '<span class="spinner"></span> Analyzing...';
+            btn.disabled = true;
+        }
+        statusDiv.textContent = `Preparing Student ${currentStudentIndex}...`;
+        try {
+            // 1. Split PDF to get student's specific pages
+            const studentPdfBase64 = await extractStudentPdfBase64(currentStudentIndex);
+            // 2. Convert that PDF chunk to Images (Vision API needs images)
+            // We need to convert the base64 string back to Uint8Array for pdf.js
+            const binaryString = atob(studentPdfBase64);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            statusDiv.textContent = "Converting pages to Images...";
+            const imagesBase64 = await convertPdfToImages(bytes);
+            statusDiv.textContent = `Sending Student ${currentStudentIndex} (${imagesBase64.length} pages) to Poe...`;
+            // 3. Call Poe API
+            return new Promise((resolve, reject) => {
+                google.script.run
+                    .withSuccessHandler(function (result) {
+                        if (!isBatch) {
+                            btn.innerHTML = "✨ Grade Current Student";
+                            btn.disabled = false;
+                            statusDiv.textContent = "";
+                        }
+                        if (result.error) {
+                            if (!isBatch) alert("Error: " + result.error);
+                            statusDiv.textContent = "Error occurred.";
+                            resolve(null);
+                        } else {
+                            const score = result.total_score || "N/A";
+                            const comment = result.overall_comment || "No comments.";
+                            scoreBox.value = score;
+                            commentBox.value = comment;
+                            statusDiv.textContent = "Grading Complete!";
+                            const gradeData = result;
+                            if (!gradeData.student_name || gradeData.student_name.includes("Student")) {
+                                gradeData.student_name = `Student ${currentStudentIndex}`;
+                            }
+                            const existingIdx = allGrades.findIndex(g => g.student_name === gradeData.student_name);
+                            if (existingIdx >= 0) allGrades[existingIdx] = gradeData;
+                            else allGrades.push(gradeData);
+                            resolve(gradeData);
+                        }
+                    })
+                    .withFailureHandler(function (err) {
+                        if (!isBatch) {
+                            btn.innerHTML = "✨ Grade Current Student";
+                            btn.disabled = false;
+                        }
+                        statusDiv.textContent = "System Error: " + err.message;
+                        resolve(null);
+                    })
+                    .callPoeAPI(imagesBase64, solutionImagesBase64, currentStudentIndex);
+            });
+        } catch (e) {
+            if (!isBatch) {
+                btn.innerHTML = "✨ Grade Current Student";
+                btn.disabled = false;
+            }
+            statusDiv.textContent = "Error: " + e.message;
+            alert("Error: " + e.message);
+            return null;
+        }
+    }
+    async function gradeAll() {
+        const total = parseInt(document.getElementById('totalStudents').value) || 1;
+        const statusDiv = document.getElementById('gradeStatus');
+        if (!currentFileId) {
+            alert("Please select a file first.");
+            return;
+        }
+        if (!confirm(`Are you sure you want to auto-grade ${total} students? This may take a while.`)) return;
+        allGrades = []; // Reset
+        for (let i = 1; i <= total; i++) {
+            currentStudentIndex = i;
+            updateStudentView();
+            statusDiv.textContent = `Batch Processing: Student ${i} of ${total}...`;
+            await runAutoGrade(true);
+            // Small delay to be nice to API
+            await new Promise(r => setTimeout(r, 1000));
+        }
+        statusDiv.textContent = "Batch Grading Complete! You can now download reports.";
+        alert("Batch Grading Complete!");
+    }
+    function downloadCsv() {
+        if (allGrades.length === 0) {
+            alert("No grades available. Please grade some students first.");
+            return;
+        }
+        // Collect all unique question IDs
+        let qKeys = new Set();
+        allGrades.forEach(g => {
+            if (g.questions) {
+                g.questions.forEach(q => qKeys.add(q.id));
+            }
+        });
+        const qHeaders = Array.from(qKeys).sort();
+        let csv = "Student,Total Score,Overall Comment," + qHeaders.join(",") + "\n";
+        allGrades.forEach(g => {
+            let row = `"${g.student_name}","${g.total_score}","${g.overall_comment}"`;
+            qHeaders.forEach(qId => {
+                const q = g.questions ? g.questions.find(item => item.id === qId) : null;
+                const qStr = q ? `${q.score} (${q.comment})` : "";
+                row += `,"${qStr}"`;
+            });
+            csv += row + "\n";
+        });
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = "grades.csv";
+        a.click();
+    }
+    function downloadPdf() {
+        if (allGrades.length === 0) {
+            alert("No grades available. Please grade some students first.");
+            return;
+        }
+        const statusDiv = document.getElementById('gradeStatus');
+        statusDiv.textContent = "Generating PDF...";
+        google.script.run
+            .withSuccessHandler(function (url) {
+                statusDiv.textContent = "PDF Ready!";
+                window.open(url, '_blank');
+            })
+            .createPdfReport(allGrades);
+    }
+    // Save Grade
+    function saveGrade() {
+        const score = document.getElementById('scoreInput').value;
+        const comment = document.getElementById('commentInput').value;
+        const studentId = `Student_${currentStudentIndex}`;
+        google.script.run
+            .withSuccessHandler(function (msg) {
+                alert(msg);
+            })
+            .saveGrade(studentId, score, comment);
+    }
+</script>
