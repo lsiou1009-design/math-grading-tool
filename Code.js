@@ -1,7 +1,7 @@
 /**
  * Math Marking System - Backend Code
  * Features: Chunking Support, Strict 1M/1A Grading, Blank Handling, Traditional Chinese
- * Update: Handles Non-Chronological Order, Sub-Question Splitting & Dashboard Grouping
+ * Update: Fixed Dashboard Loading & Grouping Logic
  */
 
 // ==========================================
@@ -61,10 +61,13 @@ function getOrCreateFolder() {
   const props = PropertiesService.getScriptProperties();
   let folderId = props.getProperty('FOLDER_ID');
   
+  // Verify if folder actually exists (in case it was deleted manually)
   if (folderId) {
     try {
       return DriveApp.getFolderById(folderId);
-    } catch (e) {}
+    } catch (e) {
+      // Folder invalid/deleted, fall through to create/search
+    }
   }
   
   const folders = DriveApp.getFoldersByName(DRIVE_FOLDER_NAME);
@@ -100,67 +103,89 @@ function uploadFile(data) {
  * Gets list of Files grouped by Student Paper
  */
 function getDriveFiles() {
-  const folderId = PropertiesService.getScriptProperties().getProperty('FOLDER_ID');
-  if (!folderId) return [];
-  
-  const folder = DriveApp.getFolderById(folderId);
-  const files = folder.getFiles();
-  const fileMap = {};
+  try {
+    const folder = getOrCreateFolder(); // Use robust getter
+    const files = folder.getFiles();
+    const fileMap = {};
+    const allFiles = [];
 
-  const allFiles = [];
-  while (files.hasNext()) {
-    const file = files.next();
-    allFiles.push({
-      id: file.getId(),
-      name: file.getName(),
-      url: file.getUrl(),
-      mimeType: file.getMimeType(),
-      created: file.getDateCreated()
-    });
-  }
+    // 1. First pass: Collect all files safely
+    while (files.hasNext()) {
+      const file = files.next();
+      allFiles.push({
+        id: file.getId(),
+        name: file.getName(),
+        url: file.getUrl(),
+        mimeType: file.getMimeType(),
+        created: file.getDateCreated()
+      });
+    }
 
-  // Sort newest first
-  allFiles.sort((a, b) => b.created - a.created); 
+    // 2. Sort newest first
+    allFiles.sort((a, b) => b.created - a.created); 
 
-  allFiles.forEach(file => {
-    // Check if it's a generated report or CSV
-    const isReport = file.name.includes("_Report_") && file.mimeType === MimeType.PDF;
-    const isCsv = file.name.includes("_Grades_") && file.mimeType === MimeType.CSV;
-
-    if (isReport || isCsv) {
-      // It's a child file. Try to find the parent name prefix.
-      const separator = isReport ? "_Report_" : "_Grades_";
-      const baseName = file.name.split(separator)[0];
+    // 3. Group Parents and Children
+    allFiles.forEach(file => {
+      // Check if it's a generated report or CSV
+      const isReport = file.name.includes("_Report_") && file.mimeType === MimeType.PDF;
+      const isCsv = file.name.includes("_Grades_") && file.mimeType === MimeType.CSV;
       
-      if (!fileMap[baseName]) fileMap[baseName] = { children: [] };
-      fileMap[baseName].children.push({
-        ...file,
-        type: isReport ? 'PDF Report' : 'CSV Grades',
-        displayDate: formatDate(file.created)
-      });
-    } else {
-      // It's likely a parent (Student Upload)
-      if (!fileMap[file.name]) fileMap[file.name] = { children: [] };
-      fileMap[file.name].parent = {
-        ...file,
-        displayDate: formatDate(file.created)
-      };
-    }
-  });
+      let baseName;
 
-  // Convert Map to List
-  const result = [];
-  Object.keys(fileMap).forEach(key => {
-    const item = fileMap[key];
-    if (item.parent) {
-      result.push({
-        ...item.parent,
-        generatedFiles: item.children
-      });
-    }
-  });
+      if (isReport || isCsv) {
+        // Child: Extract base name (e.g., "Exam_Report_..." -> "Exam")
+        const separator = isReport ? "_Report_" : "_Grades_";
+        baseName = file.name.split(separator)[0];
+        
+        if (!fileMap[baseName]) fileMap[baseName] = { children: [] };
+        
+        fileMap[baseName].children.push({
+          ...file,
+          type: isReport ? 'PDF Report' : 'CSV Grades',
+          displayDate: formatDate(file.created)
+        });
+      } else {
+        // Parent: Remove extension to match Child key (e.g., "Exam.pdf" -> "Exam")
+        // This fixes the "Nothing Shown" or "Missing Reports" issue
+        baseName = file.name.replace(/\.[^/.]+$/, ""); // Strip extension
+        
+        if (!fileMap[baseName]) fileMap[baseName] = { children: [] };
+        
+        // Only set parent if not already set (prevents duplicates if multiple files have same name)
+        if (!fileMap[baseName].parent) {
+          fileMap[baseName].parent = {
+            ...file,
+            displayDate: formatDate(file.created)
+          };
+        }
+      }
+    });
 
-  return result;
+    // 4. Convert Map to List
+    const result = [];
+    Object.keys(fileMap).forEach(key => {
+      const item = fileMap[key];
+      // Only show items that have a Parent file (User Upload)
+      // Orphans (reports without parent) are hidden to keep dashboard clean, 
+      // or you can choose to show them. Here we show Parents.
+      if (item.parent) {
+        result.push({
+          ...item.parent,
+          generatedFiles: item.children
+        });
+      } else if (item.children.length > 0) {
+        // Optional: Handle orphaned reports if original PDF was deleted
+        // result.push({ name: key + " [Deleted Source]", generatedFiles: item.children, displayDate: "N/A" });
+      }
+    });
+
+    return result;
+
+  } catch (e) {
+    // Return empty array on error so frontend doesn't hang
+    console.error("Error getting files: " + e.toString());
+    return []; 
+  }
 }
 
 function formatDate(dateObj) {
@@ -241,7 +266,7 @@ function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
       "total_score": "ignored",
       "overall_comment": "Summary.",
       "questions": [
-        { "id": "Q1a", "score": "2/2", "comment": "1M 1A (全對)" },
+        { "id": "Q1a", "score": "2/2", "comment": "M1 A1 (全對)" },
         { "id": "Q5", "score": "0/3", "comment": "未作答 (Blank)" }
       ]
     }
@@ -252,8 +277,6 @@ function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
   ];
   
   // 1. Add Solution Images 
-  // IMPORTANT: We send MORE solution images (up to 15) because we don't know 
-  // which page contains the answer for this specific student chunk.
   if (solutionImages && solutionImages.length > 0) {
     solutionImages.slice(0, 15).forEach(img => {
       userContent.push({
