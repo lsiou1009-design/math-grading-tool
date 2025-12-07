@@ -395,8 +395,8 @@
             for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
             const allImages = await convertPdfToImages(bytes);
             
-            // Chunking
-            const CHUNK_SIZE = 3;
+            // Chunking - 5 PAGES PER REQUEST
+            const CHUNK_SIZE = 5;
             const totalChunks = Math.ceil(allImages.length / CHUNK_SIZE);
             
             let mergedResult = {
@@ -464,7 +464,7 @@
                 }
             }
 
-            // Sort questions numerically (e.g., Q1, Q2, Q10)
+            // Sort questions numerically (Handles Non-Chronological Grading)
             mergedResult.questions.sort((a, b) => {
                 const numA = parseInt(a.id.replace(/\D/g, '')) || 0;
                 const numB = parseInt(b.id.replace(/\D/g, '')) || 0;
