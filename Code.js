@@ -3,15 +3,17 @@
  * Features: Chunking Support, Strict 1M/1A Grading, Blank Handling, Traditional Chinese
  */
 
+// ==========================================
 // CONFIGURATION
+// ==========================================
 const APP_NAME = "Math Marking System";
 const DRIVE_FOLDER_NAME = "Math_Marking_System_Uploads";
 const SHEET_NAME = "Math_Scores";
 const DEFAULT_BOT = "GPT-5.1"; // Optimized for GPT-5.1 as requested
 
-/**
- * Serves the Web App
- */
+// ==========================================
+// WEB APP SERVING
+// ==========================================
 function doGet(e) {
   return HtmlService.createTemplateFromFile('index')
     .evaluate()
@@ -19,9 +21,9 @@ function doGet(e) {
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
-/**
- * Initial Setup: Creates Drive Folder and Spreadsheet
- */
+// ==========================================
+// INITIAL SETUP
+// ==========================================
 function setup() {
   const folders = DriveApp.getFoldersByName(DRIVE_FOLDER_NAME);
   let folder;
@@ -51,9 +53,9 @@ function setup() {
   return "Setup Complete! Folder ID: " + folder.getId();
 }
 
-/**
- * Helper to get or create the folder
- */
+// ==========================================
+// DRIVE & FILE HANDLING
+// ==========================================
 function getOrCreateFolder() {
   const props = PropertiesService.getScriptProperties();
   let folderId = props.getProperty('FOLDER_ID');
@@ -76,9 +78,6 @@ function getOrCreateFolder() {
   return folder;
 }
 
-/**
- * Uploads a file to Drive
- */
 function uploadFile(data) {
   try {
     const folder = getOrCreateFolder();
@@ -131,7 +130,6 @@ function getDriveFiles() {
 
     if (isReport || isCsv) {
       // It's a child. Try to find the parent name prefix.
-      // Split by _Report_ or _Grades_ to find base name
       const separator = isReport ? "_Report_" : "_Grades_";
       const baseName = file.name.split(separator)[0];
       
@@ -166,16 +164,10 @@ function getDriveFiles() {
   return result;
 }
 
-/**
- * Helper to Format Date
- */
 function formatDate(dateObj) {
   return Utilities.formatDate(dateObj, Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm");
 }
 
-/**
- * Gets file content as Base64
- */
 function getFileContent(fileId) {
   try {
     const file = DriveApp.getFileById(fileId);
@@ -191,9 +183,9 @@ function getFileContent(fileId) {
   }
 }
 
-/**
- * Saves grade to Google Sheet
- */
+// ==========================================
+// GRADING LOGIC (POE API)
+// ==========================================
 function saveGrade(studentId, score, comment) {
   const sheetId = PropertiesService.getScriptProperties().getProperty('SHEET_ID');
   const ss = SpreadsheetApp.openById(sheetId);
@@ -203,12 +195,6 @@ function saveGrade(studentId, score, comment) {
   return "Saved successfully!";
 }
 
-/**
- * Calls Poe API
- * - Enforces Strict 1M/1A Grading
- * - Handles Blank Questions (Force 0 Score)
- * - Enforces Traditional Chinese
- */
 function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
   const apiKey = PropertiesService.getScriptProperties().getProperty('POE_API_KEY');
   if (!apiKey) {
@@ -216,27 +202,28 @@ function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
   }
   const apiUrl = "https://api.poe.com/v1/chat/completions";
   
-  // --- STRICT MARKING SCHEME PROMPT (Updated for Blanks & 1M/1A) ---
+  // --- STRICT MARKING SCHEME PROMPT ---
   const systemPrompt = `
     You are a STRICT Math Teacher.
     
     **TASK:** Compare the Student's Work (chunk) against the Solution Key (chunk).
     
-    **RULE 1: HANDLING BLANK/UNWRITTEN QUESTIONS (CRITICAL)**
-    - Look at the Solution Key to see which questions *should* be there.
-    - If the student has **skipped** a question or left the space **blank**:
-      - You MUST include this question in the JSON.
-      - You MUST give it a score of **"0/Total"**.
-      - Comment: "未作答 (Blank)".
-    - **NEVER skip a question** just because the student didn't write it. If it's on the page in the solution, grade it as 0.
+    **RULE 1: IDENTIFY QUESTIONS STRICTLY**
+    - You must ONLY grade questions that are present in the provided SOLUTION KEY images.
+    - Do NOT hallucinate questions. If a question is not in the Solution Key, do not output it.
+    - ID Format: Use "Q1", "Q2", "Q3a", "Q3b" exactly as seen in the Solution.
 
-    **RULE 2: STRICT 1M / 1A GRADING**
+    **RULE 2: HANDLING BLANKS (Missing Work)**
+    - If a question EXISTS in the Solution Key but the student has left the space BLANK or Skipped it:
+      - Score: "0/Total"
+      - Comment: "未作答 (Blank)"
+    - If the student work for a question is PARTIALLY cut off by the image chunk, try to grade what is visible. If completely invisible, assume Blank (0).
+
+    **RULE 3: STRICT 1M / 1A GRADING**
     - **M Mark (Method):** 1 mark if method is correct. 0 if missing/wrong.
     - **A Mark (Answer):** 1 mark if FINAL ANSWER matches EXACTLY.
-    - **NEGATIVE LOGIC:** If the Student's Answer != Solution Answer, the A mark is **0**.
-      - NO partial credit for "close" answers.
-      - NO credit if they copied the wrong number.
-      - If Method (M) is wrong, Answer (A) is automatically 0.
+    - **NEGATIVE LOGIC:** If Answer != Solution, A mark is 0.
+    - **0 Score:** If Method is wrong, Answer is 0.
 
     **OUTPUT FORMAT:**
     - Language: **Traditional Chinese (繁體中文)** ONLY.
@@ -244,19 +231,18 @@ function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
     
     **JSON STRUCTURE:**
     {
-      "student_name": "Name (if visible)",
+      "student_name": "Name",
       "total_score": "ignored",
-      "overall_comment": "Summary in Traditional Chinese.",
+      "overall_comment": "Summary.",
       "questions": [
-        { "id": "Q1", "score": "2/2", "comment": "1M 1A (全對)" },
-        { "id": "Q2", "score": "0/3", "comment": "未作答 (Blank)" },
-        { "id": "Q3", "score": "1/2", "comment": "1M (步驟對), 0A (答案錯誤)" }
+        { "id": "Q1", "score": "2/2", "comment": "M1 A1 (全對)" },
+        { "id": "Q2", "score": "0/3", "comment": "未作答 (Blank)" }
       ]
     }
   `;
   
   const userContent = [
-    { "type": "text", "text": `Grade this exam chunk (Student ${studentIndex}). Detect blanks strictly.` }
+    { "type": "text", "text": `Grade this exam chunk (Student ${studentIndex}). Detect blanks strictly based on Solution Key.` }
   ];
   
   // 1. Add Solution Images (Limit to 5 to save context window)
@@ -317,7 +303,6 @@ function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
       return { error: "No content generated." };
     }
     
-    // Robust Parsing (Extract JSON from text)
     const textResponse = json.choices[0].message.content;
     const jsonMatch = textResponse.match(/\{[\s\S]*\}/);
     
@@ -355,14 +340,12 @@ function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
         }
       });
 
-      // Force the total score to be the sum of questions
       if (hasDenominator && calculatedTotal > 0) {
         gradeData.total_score = `${calculatedObtained}/${calculatedTotal}`;
       } else {
         gradeData.total_score = `${calculatedObtained}`;
       }
     }
-    // -------------------------------------------------------------
 
     return gradeData;
     
@@ -372,9 +355,9 @@ function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
   }
 }
 
-/**
- * Generates a PDF Report from the grading data
- */
+// ==========================================
+// REPORT GENERATION (PDF & CSV)
+// ==========================================
 function createPdfReport(gradingData, sourceFileName) {
   let html = `
     <html>
@@ -392,7 +375,6 @@ function createPdfReport(gradingData, sourceFileName) {
   `;
   
   gradingData.forEach((item, index) => {
-    // Sanitize to prevent XSS
     const safeName = escapeHtml(item.student_name || "Student " + (index + 1));
     const safeScore = escapeHtml(item.total_score);
     const safeComment = escapeHtml(item.overall_comment);
@@ -434,9 +416,6 @@ function createPdfReport(gradingData, sourceFileName) {
   return file.getUrl();
 }
 
-/**
- * Saves CSV to Drive (New Function)
- */
 function saveCsvReport(csvContent, sourceFileName) {
   try {
     const folder = getOrCreateFolder();
@@ -453,9 +432,9 @@ function saveCsvReport(csvContent, sourceFileName) {
   }
 }
 
-/**
- * Helper to escape HTML to prevent XSS
- */
+// ==========================================
+// UTILITIES
+// ==========================================
 function escapeHtml(text) {
   if (!text) return "";
   return text
