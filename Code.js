@@ -268,7 +268,7 @@ function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
       "total_score": "ignored",
       "overall_comment": "Summary.",
       "questions": [
-        { "id": "Q1a", "score": "2/2", "comment": "M1 A1 (全對)" },
+        { "id": "Q1a", "score": "2/2", "comment": "1M 1A (全對)" },
         { "id": "Q5", "score": "0/3", "comment": "未作答 (Blank)" }
       ]
     }
@@ -471,4 +471,10 @@ function escapeHtml(text) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
+}
+
+function resetSystem() {
+  // Delete the saved ID so the script is forced to create a new folder next time
+  PropertiesService.getScriptProperties().deleteProperty('FOLDER_ID');
+  return "System Reset! The script will create a new folder on the next run.";
 }
