@@ -1,6 +1,7 @@
 /**
  * Math Marking System - Backend Code
  * Features: Chunking Support, Strict 1M/1A Grading, Blank Handling, Traditional Chinese
+ * Update: Handles Non-Chronological Order, Sub-Question Splitting & Dashboard Grouping
  */
 
 // ==========================================
@@ -9,7 +10,7 @@
 const APP_NAME = "Math Marking System";
 const DRIVE_FOLDER_NAME = "Math_Marking_System_Uploads";
 const SHEET_NAME = "Math_Scores";
-const DEFAULT_BOT = "GPT-5.1"; // Optimized for GPT-5.1 as requested
+const DEFAULT_BOT = "GPT-5.1"; 
 
 // ==========================================
 // WEB APP SERVING
@@ -97,7 +98,6 @@ function uploadFile(data) {
 
 /**
  * Gets list of Files grouped by Student Paper
- * Groups Generated Reports and CSVs under their original file
  */
 function getDriveFiles() {
   const folderId = PropertiesService.getScriptProperties().getProperty('FOLDER_ID');
@@ -107,7 +107,6 @@ function getDriveFiles() {
   const files = folder.getFiles();
   const fileMap = {};
 
-  // 1. First pass: Collect all files
   const allFiles = [];
   while (files.hasNext()) {
     const file = files.next();
@@ -116,20 +115,20 @@ function getDriveFiles() {
       name: file.getName(),
       url: file.getUrl(),
       mimeType: file.getMimeType(),
-      created: file.getDateCreated() // Keep as object for sorting
+      created: file.getDateCreated()
     });
   }
 
-  // 2. Identify Parents (Uploaded Student PDFs) and Children (Reports/CSVs)
-  allFiles.sort((a, b) => b.created - a.created); // Newest first
+  // Sort newest first
+  allFiles.sort((a, b) => b.created - a.created); 
 
   allFiles.forEach(file => {
-    // Check if it's a generated file
+    // Check if it's a generated report or CSV
     const isReport = file.name.includes("_Report_") && file.mimeType === MimeType.PDF;
     const isCsv = file.name.includes("_Grades_") && file.mimeType === MimeType.CSV;
 
     if (isReport || isCsv) {
-      // It's a child. Try to find the parent name prefix.
+      // It's a child file. Try to find the parent name prefix.
       const separator = isReport ? "_Report_" : "_Grades_";
       const baseName = file.name.split(separator)[0];
       
@@ -149,7 +148,7 @@ function getDriveFiles() {
     }
   });
 
-  // 3. Convert Map to List
+  // Convert Map to List
   const result = [];
   Object.keys(fileMap).forEach(key => {
     const item = fileMap[key];
@@ -206,24 +205,31 @@ function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
   const systemPrompt = `
     You are a STRICT Math Teacher.
     
-    **TASK:** Compare the Student's Work (chunk) against the Solution Key (chunk).
+    **TASK:** Compare the Student's Work (chunk) against the Solution Key.
     
-    **RULE 1: IDENTIFY QUESTIONS STRICTLY**
-    - You must ONLY grade questions that are present in the provided SOLUTION KEY images.
-    - Do NOT hallucinate questions. If a question is not in the Solution Key, do not output it.
-    - ID Format: Use "Q1", "Q2", "Q3a", "Q3b" exactly as seen in the Solution.
+    **RULE 0: NON-CHRONOLOGICAL ORDER (CRITICAL)**
+    - The Student's Work may be in **ANY ORDER** (e.g., Q5 may appear before Q1).
+    - The Student's Page Count may NOT match the Solution Key Page Count.
+    - You must **SEARCH the entire provided Solution Key** to find the specific Question ID that corresponds to the student's work.
+    - Do NOT assume the first page of Student Work matches the first page of the Solution.
 
-    **RULE 2: HANDLING BLANKS (Missing Work)**
-    - If a question EXISTS in the Solution Key but the student has left the space BLANK or Skipped it:
+    **RULE 1: SEPARATE ALL SUB-QUESTIONS**
+    - You MUST output every sub-question as a separate JSON entry (e.g., "Q1a", "Q1b", "Q5a(i)").
+    - **Do NOT group them.**
+    
+    **RULE 2: IDENTIFY QUESTIONS STRICTLY**
+    - Only grade questions that appear in the provided Solution Key.
+    - If you cannot find the question in the Solution Key images, ignore it (do not hallucinate).
+
+    **RULE 3: HANDLING BLANKS**
+    - If a question EXISTS in the Solution Key but is blank/skipped by student:
       - Score: "0/Total"
       - Comment: "未作答 (Blank)"
-    - If the student work for a question is PARTIALLY cut off by the image chunk, try to grade what is visible. If completely invisible, assume Blank (0).
-
-    **RULE 3: STRICT 1M / 1A GRADING**
-    - **M Mark (Method):** 1 mark if method is correct. 0 if missing/wrong.
+    
+    **RULE 4: STRICT 1M / 1A GRADING**
+    - **M Mark (Method):** 1 mark if method is correct.
     - **A Mark (Answer):** 1 mark if FINAL ANSWER matches EXACTLY.
     - **NEGATIVE LOGIC:** If Answer != Solution, A mark is 0.
-    - **0 Score:** If Method is wrong, Answer is 0.
 
     **OUTPUT FORMAT:**
     - Language: **Traditional Chinese (繁體中文)** ONLY.
@@ -235,19 +241,21 @@ function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
       "total_score": "ignored",
       "overall_comment": "Summary.",
       "questions": [
-        { "id": "Q1", "score": "2/2", "comment": "M1 A1 (全對)" },
-        { "id": "Q2", "score": "0/3", "comment": "未作答 (Blank)" }
+        { "id": "Q1a", "score": "2/2", "comment": "1M 1A (全對)" },
+        { "id": "Q5", "score": "0/3", "comment": "未作答 (Blank)" }
       ]
     }
   `;
   
   const userContent = [
-    { "type": "text", "text": `Grade this exam chunk (Student ${studentIndex}). Detect blanks strictly based on Solution Key.` }
+    { "type": "text", "text": `Grade this exam chunk (Student ${studentIndex}). Search Solution Key for matching questions. Separate sub-questions.` }
   ];
   
-  // 1. Add Solution Images (Limit to 5 to save context window)
+  // 1. Add Solution Images 
+  // IMPORTANT: We send MORE solution images (up to 15) because we don't know 
+  // which page contains the answer for this specific student chunk.
   if (solutionImages && solutionImages.length > 0) {
-    solutionImages.slice(0, 5).forEach(img => {
+    solutionImages.slice(0, 15).forEach(img => {
       userContent.push({
         "type": "image_url",
         "image_url": { "url": `data:image/jpeg;base64,${img}` }
@@ -255,7 +263,7 @@ function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
     });
   }
   
-  // 2. Add Student Images (Client handles chunking)
+  // 2. Add Student Images
   if (Array.isArray(studentImages)) {
     studentImages.forEach(img => {
       userContent.push({
@@ -271,7 +279,6 @@ function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
       { "role": "system", "content": systemPrompt },
       { "role": "user", "content": userContent }
     ],
-    // Low temp for strict adherence to rules
     "temperature": 0.1 
   };
   
@@ -317,7 +324,7 @@ function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
       return { error: "JSON Parse Failed: " + e.toString() };
     }
 
-    // --- MATH CORRECTION LOGIC (Re-calculate sum for this chunk) ---
+    // --- MATH CORRECTION LOGIC ---
     if (gradeData.questions && Array.isArray(gradeData.questions)) {
       let calculatedObtained = 0;
       let calculatedTotal = 0;
@@ -405,7 +412,6 @@ function createPdfReport(gradingData, sourceFileName) {
   
   const blob = HtmlService.createHtmlOutput(html).getAs(MimeType.PDF);
   
-  // naming convention: [OriginalName]_Report_[Timestamp].pdf
   const cleanSourceName = sourceFileName ? sourceFileName.replace(/\.pdf$/i, "") : "Exam";
   const timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyyMMdd-HHmm");
   blob.setName(`${cleanSourceName}_Report_${timestamp}.pdf`);
@@ -432,9 +438,6 @@ function saveCsvReport(csvContent, sourceFileName) {
   }
 }
 
-// ==========================================
-// UTILITIES
-// ==========================================
 function escapeHtml(text) {
   if (!text) return "";
   return text
