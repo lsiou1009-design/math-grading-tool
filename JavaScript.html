@@ -1,15 +1,19 @@
 <script>
-    // State
+    // ==========================================
+    // GLOBAL STATE
+    // ==========================================
     let currentStudentIndex = 1;
     let pagesPerStudent = 1;
     let currentFileId = "";
-    let currentFileName = ""; // NEW: Track the name
+    let currentFileName = ""; // Tracks current file name for reports
     let currentFileUrl = "";
     let allGrades = [];
-    let masterPdfBytes = null; // Store as Uint8Array
-    let solutionImagesBase64 = []; // Store solution images
+    let masterPdfBytes = null; // Store PDF as Uint8Array
+    let solutionImagesBase64 = []; // Store solution images for AI context
 
-    // Navigation
+    // ==========================================
+    // NAVIGATION
+    // ==========================================
     function showTab(tabId) {
         document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
         document.querySelectorAll('.nav-btn').forEach(el => el.classList.remove('active'));
@@ -20,7 +24,9 @@
         }
     }
 
-    // File Upload
+    // ==========================================
+    // FILE UPLOAD HANDLING
+    // ==========================================
     async function handleUpload() {
         const studentFile = document.getElementById('studentFile').files[0];
         const solutionFile = document.getElementById('solutionFile').files[0];
@@ -85,7 +91,9 @@
         reader.readAsDataURL(studentFile);
     }
 
-    // Dashboard: Load Files (Modified)
+    // ==========================================
+    // DASHBOARD LOGIC
+    // ==========================================
     function loadFiles() {
         const list = document.getElementById('fileList');
         list.innerHTML = "<div class='spinner'></div> Loading files...";
@@ -125,7 +133,7 @@
                     item.appendChild(dateEl);
                     item.appendChild(gradeBtn);
 
-                    // Generated Reports Section
+                    // Generated Reports Section (Children Files)
                     if (file.generatedFiles && file.generatedFiles.length > 0) {
                         const divider = document.createElement('hr');
                         divider.style.border = '0';
@@ -146,7 +154,8 @@
                         reportList.style.flexDirection = 'column';
                         reportList.style.gap = '5px';
 
-                        file.generatedFiles.sort((a,b) => b.created - a.created); // Sort reports newest first
+                        // Sort reports newest first
+                        file.generatedFiles.sort((a,b) => b.created - a.created); 
 
                         file.generatedFiles.forEach(report => {
                             const link = document.createElement('a');
@@ -185,28 +194,9 @@
             .getDriveFiles();
     }
 
-    // Load Solution from Drive
-    function loadSolutionFromDrive(fileId, fileName) {
-        if (!confirm(`Load "${fileName}" as the Solution Key?`)) return;
-        google.script.run
-            .withSuccessHandler(async function (res) {
-                if (res.success) {
-                    const binaryString = atob(res.data);
-                    const bytes = new Uint8Array(binaryString.length);
-                    for (let i = 0; i < binaryString.length; i++) {
-                        bytes[i] = binaryString.charCodeAt(i);
-                    }
-                    solutionImagesBase64 = await convertPdfToImages(bytes);
-                    const infoBox = document.querySelector('.info-box');
-                    alert(`Solution Key Loaded: ${fileName} (${solutionImagesBase64.length} pages)`);
-                } else {
-                    alert("Error loading solution: " + res.error);
-                }
-            })
-            .getFileContent(fileId);
-    }
-
-    // Open Grading Tab (Modified)
+    // ==========================================
+    // GRADING VIEW & PDF RENDERING
+    // ==========================================
     function openGrading(url, id, name, isNewUpload = false) {
         currentFileId = id;
         currentFileName = name; // Store name for report generation
@@ -233,7 +223,7 @@
                         pdfjsLib.getDocument({ data: masterPdfBytes.slice() }).promise.then(pdf => {
                             const total = Math.floor(pdf.numPages / pagesPerStudent);
                             document.getElementById('totalStudents').value = total;
-                            updateStudentView(); // Update preview
+                            updateStudentView(); 
                         });
                     } else {
                         alert("Error loading PDF: " + res.error);
@@ -246,7 +236,7 @@
         }
     }
 
-    // --- NEW: RENDER PAGES DIRECTLY (FIXES EDGE BLOCKING) ---
+    // Render Student Pages directly to Canvas
     async function updateStudentView() {
         document.getElementById('studentLabel').textContent = `Student ${currentStudentIndex}`;
         const startPage = (currentStudentIndex - 1) * pagesPerStudent + 1;
@@ -263,7 +253,6 @@
         }
 
         try {
-            // Load the Master PDF
             const loadingTask = pdfjsLib.getDocument({ data: masterPdfBytes.slice() });
             const pdf = await loadingTask.promise;
             const totalPages = pdf.numPages;
@@ -306,7 +295,9 @@
         updateStudentView();
     }
 
-    // Helper: Extract pages for a specific student (For Sending to AI)
+    // ==========================================
+    // PDF UTILITIES (Extract & Convert)
+    // ==========================================
     async function extractStudentPdfBase64(studentIndex) {
         if (!masterPdfBytes) throw new Error("Master PDF not loaded.");
         const pdfDoc = await PDFLib.PDFDocument.load(masterPdfBytes.slice());
@@ -337,7 +328,6 @@
         return btoa(result);
     }
 
-    // Helper: Convert PDF to Images
     async function convertPdfToImages(pdfBytes) {
         const loadingTask = pdfjsLib.getDocument({ data: pdfBytes });
         const pdf = await loadingTask.promise;
@@ -359,8 +349,28 @@
     }
 
     // ==========================================
-    // CHUNKING & GRADING LOGIC (With Smart Merging)
+    // INTELLIGENT GRADING LOGIC (FIXED)
     // ==========================================
+    
+    // Helper: Detect "Blank" strictly based on score AND keywords
+    function isBlankAnswer(q) {
+        if (!q.score) return true;
+        const scoreVal = parseFloat(q.score.split('/')[0]) || 0;
+        const comment = (q.comment || "").toLowerCase();
+        
+        // It's a blank if Score is 0 AND comment explicitly says it's blank/missing
+        if (scoreVal === 0 && (comment.includes("blank") || comment.includes("missing") || comment.includes("未作答"))) {
+            return true;
+        }
+        return false;
+    }
+
+    // Helper: Extract numeric score
+    function getScoreValue(scoreStr) {
+        if (!scoreStr) return 0;
+        return parseFloat(scoreStr.split('/')[0]) || 0;
+    }
+
     async function runAutoGrade(isBatch = false) {
         const btn = isBatch ? null : document.querySelector('.small-grade-btn');
         const statusDiv = document.getElementById('gradeStatus');
@@ -378,13 +388,14 @@
         try {
             statusDiv.textContent = `Grading Student ${currentStudentIndex}...`;
             
+            // Prepare Student Content
             const studentPdfBase64 = await extractStudentPdfBase64(currentStudentIndex);
             const binaryString = atob(studentPdfBase64);
             const bytes = new Uint8Array(binaryString.length);
             for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
-            
             const allImages = await convertPdfToImages(bytes);
             
+            // Chunking
             const CHUNK_SIZE = 3;
             const totalChunks = Math.ceil(allImages.length / CHUNK_SIZE);
             
@@ -410,25 +421,42 @@
 
                 if (chunkData && !chunkData.error) {
                     if (chunkData.overall_comment) mergedResult.overall_comments.push(chunkData.overall_comment);
+                    
                     if (chunkData.questions) {
                         chunkData.questions.forEach(newQ => {
+                            // Normalize ID (remove spaces, uppercase)
                             const newId = newQ.id.replace(/\s+/g, '').toUpperCase();
                             const existingIndex = mergedResult.questions.findIndex(q => 
                                 q.id.replace(/\s+/g, '').toUpperCase() === newId
                             );
 
                             if (existingIndex === -1) {
+                                // New Question found
                                 mergedResult.questions.push(newQ);
                             } else {
+                                // Conflict Resolution: Smart Merge
                                 const existingQ = mergedResult.questions[existingIndex];
-                                const isRealScore = (str) => /\d/.test(str); 
-                                const newHasScore = isRealScore(newQ.score);
-                                const oldHasScore = isRealScore(existingQ.score);
+                                
+                                const newIsBlank = isBlankAnswer(newQ);
+                                const oldIsBlank = isBlankAnswer(existingQ);
+                                const newScore = getScoreValue(newQ.score);
+                                const oldScore = getScoreValue(existingQ.score);
 
-                                if (newHasScore && !oldHasScore) {
+                                if (!newIsBlank && oldIsBlank) {
+                                    // Found actual work in this chunk -> Overwrite the "Blank" from previous chunk
                                     mergedResult.questions[existingIndex] = newQ;
-                                } else if (newHasScore && oldHasScore) {
-                                    mergedResult.questions[existingIndex].comment += ` | ${newQ.comment}`;
+                                } else if (newIsBlank && !oldIsBlank) {
+                                    // Already found work -> Ignore this "Blank"
+                                    console.log(`Ignoring blank result for ${newId} from chunk ${i+1}`);
+                                } else {
+                                    // Both Real or Both Blank -> Keep Higher Score (benefit of doubt)
+                                    if (newScore > oldScore) {
+                                        mergedResult.questions[existingIndex] = newQ;
+                                    } 
+                                    // Combine comments if not blank
+                                    else if (!newIsBlank && !oldIsBlank && newQ.comment !== existingQ.comment) {
+                                         mergedResult.questions[existingIndex].comment += ` | ${newQ.comment}`;
+                                    }
                                 }
                             }
                         });
@@ -436,12 +464,14 @@
                 }
             }
 
+            // Sort questions numerically (e.g., Q1, Q2, Q10)
             mergedResult.questions.sort((a, b) => {
                 const numA = parseInt(a.id.replace(/\D/g, '')) || 0;
                 const numB = parseInt(b.id.replace(/\D/g, '')) || 0;
                 return numA - numB;
             });
 
+            // Calculate Totals locally (Prevents hallucinated totals)
             let finalObtained = 0;
             let finalTotal = 0;
             let hasDenom = false;
@@ -468,8 +498,10 @@
                 btn.disabled = false;
             }
 
+            // Save Grade to Sheet
             google.script.run.saveGrade(mergedResult.student_name, finalScoreStr, finalCommentStr);
             
+            // Store for Export
             const gradeRecord = {
                 student_name: mergedResult.student_name,
                 total_score: finalScoreStr,
@@ -491,6 +523,7 @@
         }
     }
 
+    // Batch Grading Loop
     async function gradeAll() {
         const total = parseInt(document.getElementById('totalStudents').value) || 1;
         const statusDiv = document.getElementById('gradeStatus');
@@ -515,10 +548,13 @@
         alert("Batch Grading Complete!");
     }
 
-    // Download CSV (Modified to Save to Drive)
+    // ==========================================
+    // EXPORT FUNCTIONS
+    // ==========================================
     function downloadCsv() {
         if (allGrades.length === 0) { alert("No grades available."); return; }
         
+        // Collect all unique Question IDs
         let qKeys = new Set();
         allGrades.forEach(g => { if (g.questions) g.questions.forEach(q => qKeys.add(q.id)); });
         const qHeaders = Array.from(qKeys).sort((a, b) => {
@@ -527,7 +563,7 @@
              return numA - numB;
         });
 
-        // Add Byte Order Mark (BOM) to force UTF-8 in Excel
+        // Create CSV Content
         let csv = "\uFEFFStudent,Total Score," + qHeaders.map(h => `${h} Score`).join(",") + "\n";
         
         allGrades.forEach(g => {
@@ -540,7 +576,7 @@
             csv += row + "\n";
         });
         
-        // Trigger Server Save
+        // Save to Dashboard
         const statusDiv = document.getElementById('gradeStatus');
         statusDiv.textContent = "Saving CSV to Dashboard...";
         
@@ -548,9 +584,7 @@
             .withSuccessHandler(function(res) {
                 if(res.success) {
                     statusDiv.textContent = "CSV Saved!";
-                    // Optional: Auto download as well
                     window.open(res.url, '_blank');
-                    alert("CSV saved to Dashboard. Please refresh Dashboard to see it.");
                 } else {
                     statusDiv.textContent = "Error saving CSV.";
                     alert("Error: " + res.error);
@@ -559,7 +593,6 @@
             .saveCsvReport(csv, currentFileName);
     }
 
-    // Download PDF (Modified to link to file)
     function downloadPdf() {
         if (allGrades.length === 0) { alert("No grades available."); return; }
         const statusDiv = document.getElementById('gradeStatus');
@@ -569,6 +602,6 @@
                 statusDiv.textContent = "PDF Ready!";
                 window.open(url, '_blank');
             })
-            .createPdfReport(allGrades, currentFileName); // Pass filename
+            .createPdfReport(allGrades, currentFileName);
     }
 </script>
