@@ -5,11 +5,11 @@
     let currentStudentIndex = 1;
     let pagesPerStudent = 1;
     let currentFileId = "";
-    let currentFileName = ""; // Tracks current file name for reports
+    let currentFileName = ""; 
     let currentFileUrl = "";
     let allGrades = [];
-    let masterPdfBytes = null; // Store PDF as Uint8Array
-    let solutionImagesBase64 = []; // Store solution images for AI context
+    let masterPdfBytes = null; 
+    let solutionImagesBase64 = []; 
 
     // ==========================================
     // NAVIGATION
@@ -86,22 +86,26 @@
                         statusDiv.textContent = "Error: " + res.error;
                     }
                 })
+                .withFailureHandler(function(err) {
+                    statusDiv.textContent = "Server Error: " + err.message;
+                })
                 .uploadFile(data);
         };
         reader.readAsDataURL(studentFile);
     }
 
     // ==========================================
-    // DASHBOARD LOGIC
+    // DASHBOARD LOGIC (FIXED)
     // ==========================================
     function loadFiles() {
         const list = document.getElementById('fileList');
         list.innerHTML = "<div class='spinner'></div> Loading files...";
+        
         google.script.run
             .withSuccessHandler(function (files) {
                 list.innerHTML = "";
-                if (files.length === 0) {
-                    list.innerHTML = "<p>No files found.</p>";
+                if (!files || files.length === 0) {
+                    list.innerHTML = "<p>No files found. (Upload a PDF to start)</p>";
                     return;
                 }
                 files.forEach(file => {
@@ -190,6 +194,9 @@
 
                     list.appendChild(item);
                 });
+            })
+            .withFailureHandler(function(error) {
+                list.innerHTML = `<p style="color:red;">Error loading files: ${error.message}</p>`;
             })
             .getDriveFiles();
     }
