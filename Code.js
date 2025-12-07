@@ -1,14 +1,13 @@
 /**
  * Math Marking System - Backend Code
- * Features: Chunking Support, Strict 1M/1A Grading, Blank Handling, Traditional Chinese
- * Update: Fixed Folder Connection & Dashboard Logic
+ * Features: Strict Folder Linking, Chunking Support, POE API Integration
+ * Fixed: Dashboard "No files found" sync issue
  */
 
 // ==========================================
 // CONFIGURATION
 // ==========================================
 const APP_NAME = "Math Marking System";
-const DRIVE_FOLDER_NAME = "Math_Marking_System_Uploads";
 const SHEET_NAME = "Math_Scores";
 const DEFAULT_BOT = "GPT-5.1"; 
 
@@ -26,8 +25,10 @@ function doGet(e) {
 // INITIAL SETUP
 // ==========================================
 function setup() {
+  // 測試連線
   const folder = getOrCreateFolder();
   
+  // 設定或建立試算表
   const files = DriveApp.getFilesByName(SHEET_NAME);
   let ss;
   if (files.hasNext()) {
@@ -44,43 +45,30 @@ function setup() {
   const scriptProperties = PropertiesService.getScriptProperties();
   scriptProperties.setProperty('SHEET_ID', ss.getId());
   
-  return "Setup Complete! Folder ID: " + folder.getId();
+  return "Setup Complete! Connected to Folder: " + folder.getName();
 }
 
 // ==========================================
-// DRIVE & FILE HANDLING (FIXED)
+// DRIVE & FILE HANDLING (STRICT MODE)
 // ==========================================
 
-// 這是修復過的核心連線函式
+// [核心修正] 嚴格讀取屬性中的 ID，不再自動建立新資料夾
 function getOrCreateFolder() {
   const props = PropertiesService.getScriptProperties();
-  let folderId = props.getProperty('FOLDER_ID');
-  
-  // 1. 優先嘗試使用儲存的 ID (最準確)
-  if (folderId) {
-    try {
-      const folder = DriveApp.getFolderById(folderId);
-      if (!folder.isTrashed()) {
-        return folder;
-      }
-      console.log("Saved folder is trashed. Searching by name...");
-    } catch (e) {
-      console.log("Saved ID is invalid. Searching by name...");
-    }
+  const targetId = props.getProperty('FOLDER_ID');
+
+  // 安全檢查 1: 屬性是否存在
+  if (!targetId) {
+    throw new Error("❌ 系統錯誤：找不到 'FOLDER_ID' 屬性。請先確認您已執行設定程序 (Step 1)。");
   }
-  
-  // 2. 如果 ID 無效，嘗試用名稱搜尋
-  const folders = DriveApp.getFoldersByName(DRIVE_FOLDER_NAME);
-  if (folders.hasNext()) {
-    const folder = folders.next();
-    props.setProperty('FOLDER_ID', folder.getId()); // 更新 ID
+
+  // 安全檢查 2: 資料夾是否有效
+  try {
+    const folder = DriveApp.getFolderById(targetId);
     return folder;
+  } catch (e) {
+    throw new Error("❌ 資料夾存取失敗：您設定的 FOLDER_ID (" + targetId + ") 無效、被刪除或無權限。");
   }
-  
-  // 3. 如果都找不到，建立新資料夾
-  const folder = DriveApp.createFolder(DRIVE_FOLDER_NAME);
-  props.setProperty('FOLDER_ID', folder.getId());
-  return folder;
 }
 
 function uploadFile(data) {
@@ -102,7 +90,7 @@ function uploadFile(data) {
 
 /**
  * Gets list of Files grouped by Student Paper
- * FIXED: Returns clean list without throwing debug errors
+ * Clean version for Production
  */
 function getDriveFiles() {
   try {
@@ -191,7 +179,6 @@ function getDriveFiles() {
     return result;
 
   } catch (e) {
-    // 捕捉錯誤並回傳給前端顯示，而不是讓程式崩潰
     throw new Error("Error accessing Drive folder: " + e.message);
   }
 }
@@ -225,7 +212,6 @@ function saveGrade(studentId, score, comment) {
       try { ss = SpreadsheetApp.openById(sheetId); } catch(e) {}
   }
   if (!ss) {
-     // Fallback if ID is lost
      const files = DriveApp.getFilesByName(SHEET_NAME);
      if (files.hasNext()) ss = SpreadsheetApp.open(files.next());
      else ss = SpreadsheetApp.create(SHEET_NAME);
@@ -283,7 +269,7 @@ function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
       "total_score": "ignored",
       "overall_comment": "Summary.",
       "questions": [
-        { "id": "Q1a", "score": "2/2", "comment": "M1 A1 (全對)" },
+        { "id": "Q1a", "score": "2/2", "comment": "1M 1A (全對)" },
         { "id": "Q5", "score": "0/3", "comment": "未作答 (Blank)" }
       ]
     }
@@ -486,11 +472,4 @@ function escapeHtml(text) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
-}
-
-// 實用工具：強制重置資料夾
-// 如果您想重新建立一個全新的資料夾，請執行此函式
-function resetSystem() {
-  PropertiesService.getScriptProperties().deleteProperty('FOLDER_ID');
-  return "System Reset! Next run will create a new folder.";
 }
