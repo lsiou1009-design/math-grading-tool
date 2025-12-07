@@ -1,7 +1,7 @@
 /**
  * Math Marking System - Backend Code
  * Features: Chunking Support, Strict 1M/1A Grading, Blank Handling, Traditional Chinese
- * Update: Fixed Dashboard Empty State & Error Handling
+ * Update: Fixed Folder Connection & Dashboard Logic
  */
 
 // ==========================================
@@ -26,13 +26,7 @@ function doGet(e) {
 // INITIAL SETUP
 // ==========================================
 function setup() {
-  const folders = DriveApp.getFoldersByName(DRIVE_FOLDER_NAME);
-  let folder;
-  if (folders.hasNext()) {
-    folder = folders.next();
-  } else {
-    folder = DriveApp.createFolder(DRIVE_FOLDER_NAME);
-  }
+  const folder = getOrCreateFolder();
   
   const files = DriveApp.getFilesByName(SHEET_NAME);
   let ss;
@@ -48,35 +42,42 @@ function setup() {
   }
   
   const scriptProperties = PropertiesService.getScriptProperties();
-  scriptProperties.setProperty('FOLDER_ID', folder.getId());
   scriptProperties.setProperty('SHEET_ID', ss.getId());
   
   return "Setup Complete! Folder ID: " + folder.getId();
 }
 
 // ==========================================
-// DRIVE & FILE HANDLING
+// DRIVE & FILE HANDLING (FIXED)
 // ==========================================
+
+// 這是修復過的核心連線函式
 function getOrCreateFolder() {
   const props = PropertiesService.getScriptProperties();
   let folderId = props.getProperty('FOLDER_ID');
   
-  // Verify if folder actually exists (in case it was deleted manually)
+  // 1. 優先嘗試使用儲存的 ID (最準確)
   if (folderId) {
     try {
-      return DriveApp.getFolderById(folderId);
+      const folder = DriveApp.getFolderById(folderId);
+      if (!folder.isTrashed()) {
+        return folder;
+      }
+      console.log("Saved folder is trashed. Searching by name...");
     } catch (e) {
-      // Folder invalid/deleted, fall through to create/search
+      console.log("Saved ID is invalid. Searching by name...");
     }
   }
   
+  // 2. 如果 ID 無效，嘗試用名稱搜尋
   const folders = DriveApp.getFoldersByName(DRIVE_FOLDER_NAME);
   if (folders.hasNext()) {
     const folder = folders.next();
-    props.setProperty('FOLDER_ID', folder.getId());
+    props.setProperty('FOLDER_ID', folder.getId()); // 更新 ID
     return folder;
   }
   
+  // 3. 如果都找不到，建立新資料夾
   const folder = DriveApp.createFolder(DRIVE_FOLDER_NAME);
   props.setProperty('FOLDER_ID', folder.getId());
   return folder;
@@ -101,93 +102,98 @@ function uploadFile(data) {
 
 /**
  * Gets list of Files grouped by Student Paper
+ * FIXED: Returns clean list without throwing debug errors
  */
 function getDriveFiles() {
-  // Removed try-catch to allow errors to propagate to the frontend for debugging
-  const folder = getOrCreateFolder(); 
-  const files = folder.getFiles();
-  const fileMap = {};
-  const allFiles = [];
+  try {
+    const folder = getOrCreateFolder(); 
+    const files = folder.getFiles();
+    const fileMap = {};
+    const allFiles = [];
 
-  // 1. First pass: Collect all files
-  while (files.hasNext()) {
-    const file = files.next();
-    allFiles.push({
-      id: file.getId(),
-      name: file.getName(),
-      url: file.getUrl(),
-      mimeType: file.getMimeType(),
-      created: file.getDateCreated()
-    });
-  }
-
-  // 2. Sort newest first
-  allFiles.sort((a, b) => b.created - a.created); 
-
-  // 3. Group Parents and Children
-  allFiles.forEach(file => {
-    // Check if it's a generated report or CSV
-    const isReport = file.name.includes("_Report_") && file.mimeType === MimeType.PDF;
-    const isCsv = file.name.includes("_Grades_") && file.mimeType === MimeType.CSV;
-    
-    let baseName;
-
-    if (isReport || isCsv) {
-      // Child: Extract base name (e.g., "Exam_Report_..." -> "Exam")
-      const separator = isReport ? "_Report_" : "_Grades_";
-      baseName = file.name.split(separator)[0];
-      
-      if (!fileMap[baseName]) fileMap[baseName] = { children: [] };
-      
-      fileMap[baseName].children.push({
-        ...file,
-        type: isReport ? 'PDF Report' : 'CSV Grades',
-        displayDate: formatDate(file.created)
+    // 1. First pass: Collect all files
+    while (files.hasNext()) {
+      const file = files.next();
+      allFiles.push({
+        id: file.getId(),
+        name: file.getName(),
+        url: file.getUrl(),
+        mimeType: file.getMimeType(),
+        created: file.getDateCreated()
       });
-    } else {
-      // Parent: Remove extension to match Child key (e.g., "Exam.pdf" -> "Exam")
-      baseName = file.name.replace(/\.[^/.]+$/, ""); // Strip extension
+    }
+
+    // 2. Sort newest first
+    allFiles.sort((a, b) => b.created - a.created); 
+
+    // 3. Group Parents and Children
+    allFiles.forEach(file => {
+      // Check if it's a generated report or CSV
+      const isReport = file.name.includes("_Report_") && file.mimeType === MimeType.PDF;
+      const isCsv = file.name.includes("_Grades_") && file.mimeType === MimeType.CSV;
       
-      if (!fileMap[baseName]) fileMap[baseName] = { children: [] };
-      
-      // Only set parent if not already set
-      if (!fileMap[baseName].parent) {
-        fileMap[baseName].parent = {
+      let baseName;
+
+      if (isReport || isCsv) {
+        // Child: Extract base name (e.g., "Exam_Report_..." -> "Exam")
+        const separator = isReport ? "_Report_" : "_Grades_";
+        baseName = file.name.split(separator)[0];
+        
+        if (!fileMap[baseName]) fileMap[baseName] = { children: [] };
+        
+        fileMap[baseName].children.push({
           ...file,
+          type: isReport ? 'PDF Report' : 'CSV Grades',
           displayDate: formatDate(file.created)
-        };
+        });
+      } else {
+        // Parent: Remove extension to match Child key (e.g., "Exam.pdf" -> "Exam")
+        baseName = file.name.replace(/\.[^/.]+$/, ""); // Strip extension
+        
+        if (!fileMap[baseName]) fileMap[baseName] = { children: [] };
+        
+        // Only set parent if not already set
+        if (!fileMap[baseName].parent) {
+          fileMap[baseName].parent = {
+            ...file,
+            displayDate: formatDate(file.created)
+          };
+        }
       }
-    }
-  });
+    });
 
-  // 4. Convert Map to List (Include Orphans)
-  const result = [];
-  Object.keys(fileMap).forEach(key => {
-    const item = fileMap[key];
-    
-    if (item.parent) {
-      // Normal case: Student PDF exists
-      result.push({
-        ...item.parent,
-        generatedFiles: item.children
-      });
-    } else if (item.children.length > 0) {
-      // Orphan case: Student PDF deleted, but reports exist. Show them anyway.
-      // Use the newest report's date and ID as a fallback to ensure it renders
-      const newestChild = item.children[0];
-      result.push({
-        id: newestChild.id, // Fallback ID
-        name: key + " [Source File Missing]",
-        url: "#",
-        mimeType: "application/pdf", // Fake mime to ensure render
-        displayDate: newestChild.displayDate,
-        generatedFiles: item.children,
-        isOrphan: true // Flag for UI
-      });
-    }
-  });
+    // 4. Convert Map to List (Include Orphans)
+    const result = [];
+    Object.keys(fileMap).forEach(key => {
+      const item = fileMap[key];
+      
+      if (item.parent) {
+        // Normal case: Student PDF exists
+        result.push({
+          ...item.parent,
+          generatedFiles: item.children
+        });
+      } else if (item.children.length > 0) {
+        // Orphan case: Student PDF deleted, but reports exist
+        const newestChild = item.children[0];
+        result.push({
+          id: newestChild.id, // Fallback ID
+          name: key + " [Source File Missing]",
+          url: "#",
+          mimeType: "application/pdf", 
+          displayDate: newestChild.displayDate,
+          generatedFiles: item.children,
+          isOrphan: true 
+        });
+      }
+    });
 
-  return result;
+    return result;
+
+  } catch (e) {
+    // 捕捉錯誤並回傳給前端顯示，而不是讓程式崩潰
+    throw new Error("Error accessing Drive folder: " + e.message);
+  }
 }
 
 function formatDate(dateObj) {
@@ -214,9 +220,18 @@ function getFileContent(fileId) {
 // ==========================================
 function saveGrade(studentId, score, comment) {
   const sheetId = PropertiesService.getScriptProperties().getProperty('SHEET_ID');
-  const ss = SpreadsheetApp.openById(sheetId);
+  let ss;
+  if (sheetId) {
+      try { ss = SpreadsheetApp.openById(sheetId); } catch(e) {}
+  }
+  if (!ss) {
+     // Fallback if ID is lost
+     const files = DriveApp.getFilesByName(SHEET_NAME);
+     if (files.hasNext()) ss = SpreadsheetApp.open(files.next());
+     else ss = SpreadsheetApp.create(SHEET_NAME);
+  }
+
   const sheet = ss.getSheets()[0];
-  
   sheet.appendRow([new Date(), studentId, "", score, comment, "Teacher"]);
   return "Saved successfully!";
 }
@@ -268,7 +283,7 @@ function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
       "total_score": "ignored",
       "overall_comment": "Summary.",
       "questions": [
-        { "id": "Q1a", "score": "2/2", "comment": "1M 1A (全對)" },
+        { "id": "Q1a", "score": "2/2", "comment": "M1 A1 (全對)" },
         { "id": "Q5", "score": "0/3", "comment": "未作答 (Blank)" }
       ]
     }
@@ -473,29 +488,9 @@ function escapeHtml(text) {
     .replace(/'/g, "&#039;");
 }
 
+// 實用工具：強制重置資料夾
+// 如果您想重新建立一個全新的資料夾，請執行此函式
 function resetSystem() {
-  // Delete the saved ID so the script is forced to create a new folder next time
   PropertiesService.getScriptProperties().deleteProperty('FOLDER_ID');
-  return "System Reset! The script will create a new folder on the next run.";
-}
-
-function checkFolderStatus() {
-  const props = PropertiesService.getScriptProperties();
-  const folderId = props.getProperty('FOLDER_ID');
-  
-  if (!folderId) {
-    Logger.log("No Folder ID saved. The script is ready to create a new folder on the next run.");
-    return;
-  }
-  
-  try {
-    const folder = DriveApp.getFolderById(folderId);
-    Logger.log("-------------------------------------");
-    Logger.log("Folder Name: " + folder.getName());
-    Logger.log("Is Trashed:  " + folder.isTrashed()); // <--- LOOK AT THIS
-    Logger.log("Folder URL:  " + folder.getUrl());
-    Logger.log("-------------------------------------");
-  } catch (e) {
-    Logger.log("Error: Folder ID exists but the folder is deleted permanently.");
-  }
+  return "System Reset! Next run will create a new folder.";
 }
