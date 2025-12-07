@@ -478,3 +478,24 @@ function resetSystem() {
   PropertiesService.getScriptProperties().deleteProperty('FOLDER_ID');
   return "System Reset! The script will create a new folder on the next run.";
 }
+
+function checkFolderStatus() {
+  const props = PropertiesService.getScriptProperties();
+  const folderId = props.getProperty('FOLDER_ID');
+  
+  if (!folderId) {
+    Logger.log("No Folder ID saved. The script is ready to create a new folder on the next run.");
+    return;
+  }
+  
+  try {
+    const folder = DriveApp.getFolderById(folderId);
+    Logger.log("-------------------------------------");
+    Logger.log("Folder Name: " + folder.getName());
+    Logger.log("Is Trashed:  " + folder.isTrashed()); // <--- LOOK AT THIS
+    Logger.log("Folder URL:  " + folder.getUrl());
+    Logger.log("-------------------------------------");
+  } catch (e) {
+    Logger.log("Error: Folder ID exists but the folder is deleted permanently.");
+  }
+}
