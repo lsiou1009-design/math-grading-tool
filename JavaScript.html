@@ -80,8 +80,11 @@
                 .withSuccessHandler(function (res) {
                     if (res.success) {
                         statusDiv.textContent = "Upload Complete!";
-                        loadFiles(); // Refresh dashboard
-                        openGrading(res.url, res.fileId, res.name, true);
+                        // FIX: Add delay for Drive indexing
+                        setTimeout(() => {
+                            loadFiles(); // Refresh dashboard
+                            openGrading(res.url, res.fileId, res.name, true);
+                        }, 2000);
                     } else {
                         statusDiv.textContent = "Error: " + res.error;
                     }
@@ -113,6 +116,10 @@
                     const item = document.createElement('div');
                     item.className = 'file-item';
                     item.style.position = 'relative';
+                    if(file.isOrphan) {
+                        item.style.border = "1px solid #fca5a5";
+                        item.style.background = "#fef2f2";
+                    }
 
                     // Main File Info
                     const nameEl = document.createElement('div');
@@ -127,11 +134,17 @@
 
                     // Grade Button
                     const gradeBtn = document.createElement('button');
-                    gradeBtn.textContent = '📝 Grade This Paper';
-                    gradeBtn.className = 'primary-btn';
+                    if (file.isOrphan) {
+                        gradeBtn.textContent = '⚠️ Source Missing';
+                        gradeBtn.className = 'secondary-btn';
+                        gradeBtn.disabled = true;
+                    } else {
+                        gradeBtn.textContent = '📝 Grade This Paper';
+                        gradeBtn.className = 'primary-btn';
+                        gradeBtn.onclick = () => openGrading(file.url, file.id, file.name);
+                    }
                     gradeBtn.style.width = '100%';
                     gradeBtn.style.padding = '8px';
-                    gradeBtn.onclick = () => openGrading(file.url, file.id, file.name);
 
                     item.appendChild(nameEl);
                     item.appendChild(dateEl);
@@ -196,7 +209,7 @@
                 });
             })
             .withFailureHandler(function(error) {
-                list.innerHTML = `<p style="color:red;">Error loading files: ${error.message}</p>`;
+                list.innerHTML = `<p style="color:red; font-weight:bold;">Error loading files: ${error.message}</p>`;
             })
             .getDriveFiles();
     }
