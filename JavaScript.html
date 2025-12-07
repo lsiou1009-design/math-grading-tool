@@ -25,7 +25,7 @@
     }
 
     // ==========================================
-    // FILE UPLOAD HANDLING
+    // FILE UPLOAD HANDLING (FIXED: Uploads Solution too)
     // ==========================================
     async function handleUpload() {
         const studentFile = document.getElementById('studentFile').files[0];
@@ -67,24 +67,50 @@
             solutionImagesBase64 = [];
         }
 
-        // 3. Upload Student PDF to Drive
+        // 3. Upload Files to Drive (Sequential)
         statusDiv.textContent = "Uploading Student PDF to Drive...";
         const reader = new FileReader();
+        
         reader.onload = function (e) {
-            const data = {
+            const studentData = {
                 data: e.target.result.split(',')[1],
                 fileName: studentFile.name,
                 mimeType: studentFile.type
             };
+            
+            // Upload Student File First
             google.script.run
                 .withSuccessHandler(function (res) {
                     if (res.success) {
-                        statusDiv.textContent = "Upload Complete!";
-                        // FIX: Add delay for Drive indexing
-                        setTimeout(() => {
-                            loadFiles(); // Refresh dashboard
-                            openGrading(res.url, res.fileId, res.name, true);
-                        }, 2000);
+                        // If Solution File exists, upload it next
+                        if (solutionFile) {
+                             statusDiv.textContent = "Student uploaded. Now uploading Solution...";
+                             const solReader = new FileReader();
+                             solReader.onload = function(evt) {
+                                 const solData = {
+                                     data: evt.target.result.split(',')[1],
+                                     fileName: solutionFile.name,
+                                     mimeType: solutionFile.type
+                                 };
+                                 google.script.run
+                                     .withSuccessHandler(function() {
+                                         statusDiv.textContent = "All Files Uploaded!";
+                                         setTimeout(() => {
+                                             loadFiles(); // Refresh dashboard
+                                             openGrading(res.url, res.fileId, res.name, true);
+                                         }, 2000);
+                                     })
+                                     .uploadFile(solData);
+                             };
+                             solReader.readAsDataURL(solutionFile);
+                        } else {
+                            // No solution file, just finish
+                            statusDiv.textContent = "Upload Complete!";
+                            setTimeout(() => {
+                                loadFiles(); // Refresh dashboard
+                                openGrading(res.url, res.fileId, res.name, true);
+                            }, 2000);
+                        }
                     } else {
                         statusDiv.textContent = "Error: " + res.error;
                     }
@@ -92,23 +118,29 @@
                 .withFailureHandler(function(err) {
                     statusDiv.textContent = "Server Error: " + err.message;
                 })
-                .uploadFile(data);
+                .uploadFile(studentData);
         };
         reader.readAsDataURL(studentFile);
     }
 
     // ==========================================
-    // DASHBOARD LOGIC (FIXED)
+    // DASHBOARD LOGIC (FIXED: Added Debug Alerts)
     // ==========================================
     function loadFiles() {
         const list = document.getElementById('fileList');
         list.innerHTML = "<div class='spinner'></div> Loading files...";
         
+        // DEBUG STAGE 1
+        alert("Stage 1: Sending request to Google Server...");
+
         google.script.run
             .withSuccessHandler(function (files) {
+                // DEBUG STAGE 2
+                alert("Stage 2: Success! Server returned " + (files ? files.length : 0) + " files.");
+
                 list.innerHTML = "";
                 if (!files || files.length === 0) {
-                    list.innerHTML = "<p>No files found. (Upload a PDF to start)</p>";
+                    list.innerHTML = "<p>Server says no files found (No files found).</p>";
                     return;
                 }
                 files.forEach(file => {
@@ -209,6 +241,8 @@
                 });
             })
             .withFailureHandler(function(error) {
+                // DEBUG STAGE 3
+                alert("Stage 3: Failed! (Failure Handler Triggered)\n\nError: " + error.message);
                 list.innerHTML = `<p style="color:red; font-weight:bold;">Error loading files: ${error.message}</p>`;
             })
             .getDriveFiles();
