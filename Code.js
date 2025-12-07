@@ -1,7 +1,7 @@
 /**
  * Math Marking System - Backend Code
  * Features: Chunking Support, Strict 1M/1A Grading, Blank Handling, Traditional Chinese
- * Update: Fixed Dashboard Loading & Grouping Logic
+ * Update: Fixed Dashboard Empty State & Error Handling
  */
 
 // ==========================================
@@ -103,89 +103,91 @@ function uploadFile(data) {
  * Gets list of Files grouped by Student Paper
  */
 function getDriveFiles() {
-  try {
-    const folder = getOrCreateFolder(); // Use robust getter
-    const files = folder.getFiles();
-    const fileMap = {};
-    const allFiles = [];
+  // Removed try-catch to allow errors to propagate to the frontend for debugging
+  const folder = getOrCreateFolder(); 
+  const files = folder.getFiles();
+  const fileMap = {};
+  const allFiles = [];
 
-    // 1. First pass: Collect all files safely
-    while (files.hasNext()) {
-      const file = files.next();
-      allFiles.push({
-        id: file.getId(),
-        name: file.getName(),
-        url: file.getUrl(),
-        mimeType: file.getMimeType(),
-        created: file.getDateCreated()
+  // 1. First pass: Collect all files
+  while (files.hasNext()) {
+    const file = files.next();
+    allFiles.push({
+      id: file.getId(),
+      name: file.getName(),
+      url: file.getUrl(),
+      mimeType: file.getMimeType(),
+      created: file.getDateCreated()
+    });
+  }
+
+  // 2. Sort newest first
+  allFiles.sort((a, b) => b.created - a.created); 
+
+  // 3. Group Parents and Children
+  allFiles.forEach(file => {
+    // Check if it's a generated report or CSV
+    const isReport = file.name.includes("_Report_") && file.mimeType === MimeType.PDF;
+    const isCsv = file.name.includes("_Grades_") && file.mimeType === MimeType.CSV;
+    
+    let baseName;
+
+    if (isReport || isCsv) {
+      // Child: Extract base name (e.g., "Exam_Report_..." -> "Exam")
+      const separator = isReport ? "_Report_" : "_Grades_";
+      baseName = file.name.split(separator)[0];
+      
+      if (!fileMap[baseName]) fileMap[baseName] = { children: [] };
+      
+      fileMap[baseName].children.push({
+        ...file,
+        type: isReport ? 'PDF Report' : 'CSV Grades',
+        displayDate: formatDate(file.created)
+      });
+    } else {
+      // Parent: Remove extension to match Child key (e.g., "Exam.pdf" -> "Exam")
+      baseName = file.name.replace(/\.[^/.]+$/, ""); // Strip extension
+      
+      if (!fileMap[baseName]) fileMap[baseName] = { children: [] };
+      
+      // Only set parent if not already set
+      if (!fileMap[baseName].parent) {
+        fileMap[baseName].parent = {
+          ...file,
+          displayDate: formatDate(file.created)
+        };
+      }
+    }
+  });
+
+  // 4. Convert Map to List (Include Orphans)
+  const result = [];
+  Object.keys(fileMap).forEach(key => {
+    const item = fileMap[key];
+    
+    if (item.parent) {
+      // Normal case: Student PDF exists
+      result.push({
+        ...item.parent,
+        generatedFiles: item.children
+      });
+    } else if (item.children.length > 0) {
+      // Orphan case: Student PDF deleted, but reports exist. Show them anyway.
+      // Use the newest report's date and ID as a fallback to ensure it renders
+      const newestChild = item.children[0];
+      result.push({
+        id: newestChild.id, // Fallback ID
+        name: key + " [Source File Missing]",
+        url: "#",
+        mimeType: "application/pdf", // Fake mime to ensure render
+        displayDate: newestChild.displayDate,
+        generatedFiles: item.children,
+        isOrphan: true // Flag for UI
       });
     }
+  });
 
-    // 2. Sort newest first
-    allFiles.sort((a, b) => b.created - a.created); 
-
-    // 3. Group Parents and Children
-    allFiles.forEach(file => {
-      // Check if it's a generated report or CSV
-      const isReport = file.name.includes("_Report_") && file.mimeType === MimeType.PDF;
-      const isCsv = file.name.includes("_Grades_") && file.mimeType === MimeType.CSV;
-      
-      let baseName;
-
-      if (isReport || isCsv) {
-        // Child: Extract base name (e.g., "Exam_Report_..." -> "Exam")
-        const separator = isReport ? "_Report_" : "_Grades_";
-        baseName = file.name.split(separator)[0];
-        
-        if (!fileMap[baseName]) fileMap[baseName] = { children: [] };
-        
-        fileMap[baseName].children.push({
-          ...file,
-          type: isReport ? 'PDF Report' : 'CSV Grades',
-          displayDate: formatDate(file.created)
-        });
-      } else {
-        // Parent: Remove extension to match Child key (e.g., "Exam.pdf" -> "Exam")
-        // This fixes the "Nothing Shown" or "Missing Reports" issue
-        baseName = file.name.replace(/\.[^/.]+$/, ""); // Strip extension
-        
-        if (!fileMap[baseName]) fileMap[baseName] = { children: [] };
-        
-        // Only set parent if not already set (prevents duplicates if multiple files have same name)
-        if (!fileMap[baseName].parent) {
-          fileMap[baseName].parent = {
-            ...file,
-            displayDate: formatDate(file.created)
-          };
-        }
-      }
-    });
-
-    // 4. Convert Map to List
-    const result = [];
-    Object.keys(fileMap).forEach(key => {
-      const item = fileMap[key];
-      // Only show items that have a Parent file (User Upload)
-      // Orphans (reports without parent) are hidden to keep dashboard clean, 
-      // or you can choose to show them. Here we show Parents.
-      if (item.parent) {
-        result.push({
-          ...item.parent,
-          generatedFiles: item.children
-        });
-      } else if (item.children.length > 0) {
-        // Optional: Handle orphaned reports if original PDF was deleted
-        // result.push({ name: key + " [Deleted Source]", generatedFiles: item.children, displayDate: "N/A" });
-      }
-    });
-
-    return result;
-
-  } catch (e) {
-    // Return empty array on error so frontend doesn't hang
-    console.error("Error getting files: " + e.toString());
-    return []; 
-  }
+  return result;
 }
 
 function formatDate(dateObj) {
