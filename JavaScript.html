@@ -25,13 +25,15 @@
     }
 
     // ==========================================
-    // FILE UPLOAD HANDLING (Timestamp & Grouping Fix)
+    // FILE UPLOAD HANDLING (Timestamp & PPS Saving)
     // ==========================================
     async function handleUpload() {
         const studentFile = document.getElementById('studentFile').files[0];
         const solutionFile = document.getElementById('solutionFile').files[0];
         const statusDiv = document.getElementById('uploadStatus');
-        const ppsInput = document.getElementById('pagesPerStudent').value;
+        
+        // Capture the input value NOW to save it
+        const ppsInputVal = parseInt(document.getElementById('pagesPerStudent').value) || 1;
 
         if (!studentFile) {
             statusDiv.textContent = "Please select a Student PDF.";
@@ -67,8 +69,7 @@
             const loadingTask = pdfjsLib.getDocument({ data: masterPdfBytes.slice() });
             const pdf = await loadingTask.promise;
             const totalPages = pdf.numPages;
-            const pps = parseInt(ppsInput) || 1;
-            const calculatedStudents = Math.floor(totalPages / pps);
+            const calculatedStudents = Math.floor(totalPages / ppsInputVal);
             document.getElementById('totalStudents').value = calculatedStudents;
         } catch (e) {
             console.error("Error counting pages:", e);
@@ -92,7 +93,8 @@
             const studentData = {
                 data: e.target.result.split(',')[1],
                 fileName: finalStudentName, // <--- Unique Name
-                mimeType: studentFile.type
+                mimeType: studentFile.type,
+                pagesPerStudent: ppsInputVal // <--- Saving the Metadata
             };
             
             // Upload Student File First
@@ -108,6 +110,7 @@
                                      data: evt.target.result.split(',')[1],
                                      fileName: finalSolutionName, // <--- Linked Unique Name
                                      mimeType: solutionFile.type
+                                     // No need to save PPS for solution file
                                  };
                                  google.script.run
                                      .withSuccessHandler(function() {
@@ -115,7 +118,7 @@
                                          setTimeout(() => {
                                              loadFiles(); // Refresh dashboard
                                              // Pass null for ID because we have solution in memory
-                                             openGrading(res.url, res.fileId, res.name, null, true);
+                                             openGrading(res.url, res.fileId, res.name, null, true, ppsInputVal);
                                          }, 1500);
                                      })
                                      .uploadFile(solData);
@@ -126,7 +129,7 @@
                             statusDiv.textContent = "Upload Complete!";
                             setTimeout(() => {
                                 loadFiles(); 
-                                openGrading(res.url, res.fileId, res.name, null, true);
+                                openGrading(res.url, res.fileId, res.name, null, true, ppsInputVal);
                             }, 1500);
                         }
                     } else {
@@ -142,7 +145,7 @@
     }
 
     // ==========================================
-    // DASHBOARD LOGIC (Clean & Solution Aware)
+    // DASHBOARD LOGIC (Clean, Badges & PPS Aware)
     // ==========================================
     function loadFiles() {
         const list = document.getElementById('fileList');
@@ -195,7 +198,10 @@
                     
                     if (!file.isOrphan) {
                         const solId = file.solution ? file.solution.id : null;
-                        gradeBtn.onclick = () => openGrading(file.url, file.id, file.name, solId);
+                        // Retrieve the saved PPS from the file object
+                        const savedPPS = file.pagesPerStudent || null; 
+                        
+                        gradeBtn.onclick = () => openGrading(file.url, file.id, file.name, solId, false, savedPPS);
                     } else {
                         gradeBtn.disabled = true;
                     }
@@ -270,14 +276,36 @@
     }
 
     // ==========================================
-    // GRADING VIEW & PDF RENDERING
+    // GRADING VIEW & PDF RENDERING (Priority: Saved > Prompt > Default)
     // ==========================================
-    function openGrading(url, id, name, solutionId = null, isNewUpload = false) {
+    function openGrading(url, id, name, solutionId = null, isNewUpload = false, savedPPS = null) {
         currentFileId = id;
         currentFileName = name; 
-        const inputVal = document.getElementById('pagesPerStudent').value;
-        pagesPerStudent = parseInt(inputVal) || 1;
         
+        // LOGIC: Determine Pages Per Student
+        if (!isNewUpload) {
+            if (savedPPS) {
+                // If the file has memory, use it!
+                pagesPerStudent = parseInt(savedPPS) || 1;
+            } else {
+                // Old file with no memory: Ask the user
+                const userPPS = prompt(`How many pages per student for:\n"${name}"?`, "1");
+                if (userPPS === null) return; // Cancelled
+                pagesPerStudent = parseInt(userPPS) || 1;
+            }
+        } else {
+            // New Upload: Use the passed value or current input
+            if (savedPPS) {
+                pagesPerStudent = savedPPS;
+            } else {
+                const inputVal = document.getElementById('pagesPerStudent').value;
+                pagesPerStudent = parseInt(inputVal) || 1;
+            }
+        }
+        
+        // Sync the UI input box
+        document.getElementById('pagesPerStudent').value = pagesPerStudent;
+
         currentStudentIndex = 1;
         showTab('grading');
         
@@ -294,7 +322,7 @@
                             bytes[i] = binaryString.charCodeAt(i);
                         }
                         masterPdfBytes = bytes;
-                        statusDiv.textContent = ""; // Clear status
+                        statusDiv.textContent = ""; 
                         
                         pdfjsLib.getDocument({ data: masterPdfBytes.slice() }).promise.then(pdf => {
                             const total = Math.floor(pdf.numPages / pagesPerStudent);
