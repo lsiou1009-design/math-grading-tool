@@ -92,9 +92,17 @@ function uploadFile(data) {
  * Gets list of Files grouped by Student Paper
  * Clean version for Production
  */
+/**
+ * Gets list of Files grouped by Student Paper
+ * Fixes: Added Logging & Safe MimeType checks
+ */
 function getDriveFiles() {
   try {
     const folder = getOrCreateFolder(); 
+    
+    // DEBUG: Check which folder we are actually looking at
+    console.log("Accessing Folder: " + folder.getName() + " (ID: " + folder.getId() + ")");
+    
     const files = folder.getFiles();
     const fileMap = {};
     const allFiles = [];
@@ -102,6 +110,10 @@ function getDriveFiles() {
     // 1. First pass: Collect all files
     while (files.hasNext()) {
       const file = files.next();
+      
+      // DEBUG: Log each file found
+      console.log("Found file: " + file.getName() + " [" + file.getMimeType() + "]");
+      
       allFiles.push({
         id: file.getId(),
         name: file.getName(),
@@ -111,21 +123,30 @@ function getDriveFiles() {
       });
     }
 
+    // Check if folder is actually empty
+    if (allFiles.length === 0) {
+      console.warn("Folder appears empty to the Script.");
+      return [];
+    }
+
     // 2. Sort newest first
     allFiles.sort((a, b) => b.created - a.created); 
 
     // 3. Group Parents and Children
     allFiles.forEach(file => {
-      // Check if it's a generated report or CSV
-      const isReport = file.name.includes("_Report_") && file.mimeType === MimeType.PDF;
-      const isCsv = file.name.includes("_Grades_") && file.mimeType === MimeType.CSV;
+      // Use String comparison for safety instead of Enum
+      const type = file.mimeType;
+      const name = file.name;
+      
+      const isReport = name.includes("_Report_") && type === "application/pdf";
+      const isCsv = name.includes("_Grades_") && (type === "text/csv" || type === "application/vnd.ms-excel");
       
       let baseName;
 
       if (isReport || isCsv) {
-        // Child: Extract base name (e.g., "Exam_Report_..." -> "Exam")
+        // Child: Extract base name
         const separator = isReport ? "_Report_" : "_Grades_";
-        baseName = file.name.split(separator)[0];
+        baseName = name.split(separator)[0];
         
         if (!fileMap[baseName]) fileMap[baseName] = { children: [] };
         
@@ -135,8 +156,8 @@ function getDriveFiles() {
           displayDate: formatDate(file.created)
         });
       } else {
-        // Parent: Remove extension to match Child key (e.g., "Exam.pdf" -> "Exam")
-        baseName = file.name.replace(/\.[^/.]+$/, ""); // Strip extension
+        // Parent: Remove extension
+        baseName = name.replace(/\.[^/.]+$/, ""); 
         
         if (!fileMap[baseName]) fileMap[baseName] = { children: [] };
         
@@ -150,22 +171,21 @@ function getDriveFiles() {
       }
     });
 
-    // 4. Convert Map to List (Include Orphans)
+    // 4. Convert Map to List
     const result = [];
     Object.keys(fileMap).forEach(key => {
       const item = fileMap[key];
       
       if (item.parent) {
-        // Normal case: Student PDF exists
         result.push({
           ...item.parent,
           generatedFiles: item.children
         });
       } else if (item.children.length > 0) {
-        // Orphan case: Student PDF deleted, but reports exist
+        // Orphan case
         const newestChild = item.children[0];
         result.push({
-          id: newestChild.id, // Fallback ID
+          id: newestChild.id, 
           name: key + " [Source File Missing]",
           url: "#",
           mimeType: "application/pdf", 
@@ -179,6 +199,7 @@ function getDriveFiles() {
     return result;
 
   } catch (e) {
+    console.error("Error in getDriveFiles: " + e.toString());
     throw new Error("Error accessing Drive folder: " + e.message);
   }
 }
