@@ -69,9 +69,14 @@ function getOrCreateFolder() {
 function uploadFile(data) {
   try {
     const folder = getOrCreateFolder();
-    // Filename is provided by frontend (already timestamped there)
+    // Decode and Create File
     const blob = Utilities.newBlob(Utilities.base64Decode(data.data), data.mimeType, data.fileName);
     const file = folder.createFile(blob);
+    
+    // FIX: Save "Pages Per Student" to File Description
+    if (data.pagesPerStudent) {
+      file.setDescription("PPS:" + data.pagesPerStudent);
+    }
     
     return {
       success: true,
@@ -91,42 +96,46 @@ function uploadFile(data) {
 function getDriveFiles() {
   try {
     const folder = getOrCreateFolder(); 
-    
-    // Efficient search to find latest files instantly
     const files = folder.searchFiles("trashed = false");
     const allFiles = [];
 
-    // 1. Collect all files (Convert Date to Number for transfer safety)
     while (files.hasNext()) {
       const file = files.next();
+      
+      // FIX: Read "Pages Per Student" from Description
+      let pps = 1; // Default
+      const desc = file.getDescription();
+      if (desc && desc.startsWith("PPS:")) {
+        pps = parseInt(desc.split(":")[1]) || 1;
+      }
+
       allFiles.push({
         id: file.getId(),
         name: file.getName(),
         url: file.getUrl(),
         mimeType: file.getMimeType(),
-        created: file.getDateCreated().getTime() 
+        created: file.getDateCreated().getTime(),
+        pagesPerStudent: pps // <--- Include this in the data
       });
     }
 
     if (allFiles.length === 0) return [];
 
-    // 2. Sort Newest First (Critical for Version Control)
+    // 2. Sort Newest First
     allFiles.sort((a, b) => b.created - a.created); 
 
     // 3. Group Parents, Children, and Solutions
     const fileMap = {};
     
     allFiles.forEach(file => {
+      // ... (Keep existing grouping logic unchanged) ...
       const name = file.name;
       const type = file.mimeType;
-      
       const isReport = name.includes("_Report_") && type === "application/pdf";
       const isCsv = name.includes("_Grades_") && (type === "text/csv" || type === "application/vnd.ms-excel");
       const isSolution = name.includes(" (Solution)"); 
 
-      let baseName = name.replace(/\.[^/.]+$/, ""); // Remove extension
-
-      // Normalize Base Name (Strip suffixes to find the Parent)
+      let baseName = name.replace(/\.[^/.]+$/, ""); 
       if (isReport) baseName = baseName.split("_Report_")[0];
       else if (isCsv) baseName = baseName.split("_Grades_")[0];
       else if (isSolution) baseName = baseName.split(" (Solution)")[0];
@@ -136,7 +145,7 @@ function getDriveFiles() {
       }
 
       const entry = {
-        ...file,
+        ...file, // This carries the 'pagesPerStudent' property
         displayDate: formatDate(new Date(file.created))
       };
 
@@ -144,16 +153,10 @@ function getDriveFiles() {
         fileMap[baseName].children.push(entry);
       } 
       else if (isSolution) {
-        // Only keep the newest solution (First one found due to sort)
-        if (!fileMap[baseName].solution) {
-            fileMap[baseName].solution = entry;
-        }
+        if (!fileMap[baseName].solution) fileMap[baseName].solution = entry;
       } 
       else {
-        // Only keep the newest Student Paper
-        if (!fileMap[baseName].parent) {
-            fileMap[baseName].parent = entry;
-        }
+        if (!fileMap[baseName].parent) fileMap[baseName].parent = entry;
       }
     });
 
@@ -161,16 +164,14 @@ function getDriveFiles() {
     const result = [];
     Object.keys(fileMap).forEach(key => {
       const item = fileMap[key];
-      
       if (item.parent) {
-        // Normal Case: Student Paper Exists
         result.push({
-          ...item.parent,
+          ...item.parent, // 'pagesPerStudent' is inside here
           solution: item.solution,
           generatedFiles: item.children
         });
       } else if (item.children.length > 0 || item.solution) {
-        // Orphan Case: Source missing, but has reports/solution
+        // Orphan Case
         const representative = item.children[0] || item.solution;
         result.push({
           id: representative.id,
@@ -185,9 +186,7 @@ function getDriveFiles() {
       }
     });
 
-    // Final Sort by Creation Date (Newest groups at top)
     result.sort((a, b) => b.created - a.created);
-
     return result;
 
   } catch (e) {
