@@ -9,7 +9,7 @@
 // ==========================================
 const APP_NAME = "Math Marking System";
 const SHEET_NAME = "Math_Scores";
-const DEFAULT_BOT = "GPT-5.1"; 
+const DEFAULT_BOT = "Gemini-3-Pro"; 
 
 // ==========================================
 // WEB APP SERVING
