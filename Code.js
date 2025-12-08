@@ -90,61 +90,53 @@ function uploadFile(data) {
 
 /**
  * Gets list of Files grouped by Student Paper
- * Clean version for Production
- */
-/**
- * Gets list of Files grouped by Student Paper
- * Fixes: Added Logging & Safe MimeType checks
+ * FIX: Diagnosis mode to trace why files are disappearing
  */
 function getDriveFiles() {
   try {
     const folder = getOrCreateFolder(); 
-    
-    // DEBUG: Check which folder we are actually looking at
-    console.log("Accessing Folder: " + folder.getName() + " (ID: " + folder.getId() + ")");
-    
-    const files = folder.getFiles();
-    const fileMap = {};
+    console.log("📂 [Step 1] Accessing Folder: " + folder.getName());
+
+    // 使用 searchFiles 確保能找到最新檔案
+    const files = folder.searchFiles("trashed = false");
     const allFiles = [];
 
-    // 1. First pass: Collect all files
+    // 1. 收集檔案
     while (files.hasNext()) {
       const file = files.next();
-      
-      // DEBUG: Log each file found
-      console.log("Found file: " + file.getName() + " [" + file.getMimeType() + "]");
-      
+      // 轉換成簡單物件，避免 Date 物件造成序列化問題
       allFiles.push({
         id: file.getId(),
         name: file.getName(),
         url: file.getUrl(),
-        mimeType: file.getMimeType(),
-        created: file.getDateCreated()
+        mimeType: file.getMimeType(), // 確保是字串
+        created: file.getDateCreated().getTime() // 轉成 timestamp 數字，避免傳輸錯誤
       });
     }
 
-    // Check if folder is actually empty
-    if (allFiles.length === 0) {
-      console.warn("Folder appears empty to the Script.");
-      return [];
-    }
+    console.log(`📂 [Step 2] Found ${allFiles.length} raw files.`);
+    
+    // 如果這裡就是 0，那 searchFiles 有問題 (但根據你的 log，這裡應該不是 0)
+    if (allFiles.length === 0) return [];
 
-    // 2. Sort newest first
-    allFiles.sort((a, b) => b.created - a.created); 
+    // 2. 排序
+    allFiles.sort((a, b) => b.created - a.created);
 
-    // 3. Group Parents and Children
+    // 3. 分組邏輯 (重點檢查區)
+    const fileMap = {};
+    
     allFiles.forEach(file => {
-      // Use String comparison for safety instead of Enum
-      const type = file.mimeType;
       const name = file.name;
+      const type = file.mimeType;
       
+      // 判定是否為報告或成績單
       const isReport = name.includes("_Report_") && type === "application/pdf";
       const isCsv = name.includes("_Grades_") && (type === "text/csv" || type === "application/vnd.ms-excel");
-      
+
       let baseName;
 
       if (isReport || isCsv) {
-        // Child: Extract base name
+        // 是子檔案 (Child)
         const separator = isReport ? "_Report_" : "_Grades_";
         baseName = name.split(separator)[0];
         
@@ -153,54 +145,61 @@ function getDriveFiles() {
         fileMap[baseName].children.push({
           ...file,
           type: isReport ? 'PDF Report' : 'CSV Grades',
-          displayDate: formatDate(file.created)
+          displayDate: formatDate(new Date(file.created))
         });
+        
+        console.log(`   ➡️ Classified [${name}] as CHILD of [${baseName}]`);
       } else {
-        // Parent: Remove extension
+        // 是主檔案 (Parent)
+        // 移除副檔名邏輯
         baseName = name.replace(/\.[^/.]+$/, ""); 
         
         if (!fileMap[baseName]) fileMap[baseName] = { children: [] };
         
-        // Only set parent if not already set
         if (!fileMap[baseName].parent) {
           fileMap[baseName].parent = {
             ...file,
-            displayDate: formatDate(file.created)
+            displayDate: formatDate(new Date(file.created))
           };
+           console.log(`   ➡️ Classified [${name}] as PARENT [${baseName}]`);
+        } else {
+           console.log(`   ⚠️ Duplicate Parent ignored: [${name}]`);
         }
       }
     });
 
-    // 4. Convert Map to List
+    // 4. 轉換為列表
     const result = [];
     Object.keys(fileMap).forEach(key => {
       const item = fileMap[key];
       
       if (item.parent) {
+        // 正常情況：有主檔案
         result.push({
           ...item.parent,
           generatedFiles: item.children
         });
       } else if (item.children.length > 0) {
-        // Orphan case
-        const newestChild = item.children[0];
+        // 孤兒檔案：主檔案不見了，但有報告
         result.push({
-          id: newestChild.id, 
+          id: item.children[0].id,
           name: key + " [Source File Missing]",
           url: "#",
           mimeType: "application/pdf", 
-          displayDate: newestChild.displayDate,
+          displayDate: item.children[0].displayDate,
           generatedFiles: item.children,
           isOrphan: true 
         });
       }
     });
 
+    console.log(`📂 [Step 3] Grouping Complete. Final count: ${result.length}`);
     return result;
 
   } catch (e) {
-    console.error("Error in getDriveFiles: " + e.toString());
-    throw new Error("Error accessing Drive folder: " + e.message);
+    console.error("❌ Critical Error in getDriveFiles: " + e.toString());
+    // 發生錯誤時傳回空陣列，避免前端卡死
+    throw new Error("Backend Error: " + e.message); 
   }
 }
 
