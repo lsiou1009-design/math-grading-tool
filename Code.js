@@ -1,7 +1,7 @@
 /**
  * Math Marking System - Backend Code
  * Features: Strict Folder Linking, Chunking Support, POE API Integration
- * Fixed: Dashboard "No files found" sync issue
+ * Fixed: Dashboard "No files found" sync issue, Solution Grouping, Timestamp Safety
  */
 
 // ==========================================
@@ -25,10 +25,8 @@ function doGet(e) {
 // INITIAL SETUP
 // ==========================================
 function setup() {
-  // 測試連線
   const folder = getOrCreateFolder();
   
-  // 設定或建立試算表
   const files = DriveApp.getFilesByName(SHEET_NAME);
   let ss;
   if (files.hasNext()) {
@@ -52,28 +50,26 @@ function setup() {
 // DRIVE & FILE HANDLING (STRICT MODE)
 // ==========================================
 
-// [核心修正] 嚴格讀取屬性中的 ID，不再自動建立新資料夾
 function getOrCreateFolder() {
   const props = PropertiesService.getScriptProperties();
   const targetId = props.getProperty('FOLDER_ID');
 
-  // 安全檢查 1: 屬性是否存在
   if (!targetId) {
-    throw new Error("❌ 系統錯誤：找不到 'FOLDER_ID' 屬性。請先確認您已執行設定程序 (Step 1)。");
+    throw new Error("❌ System Error: 'FOLDER_ID' not found in Script Properties.");
   }
 
-  // 安全檢查 2: 資料夾是否有效
   try {
     const folder = DriveApp.getFolderById(targetId);
     return folder;
   } catch (e) {
-    throw new Error("❌ 資料夾存取失敗：您設定的 FOLDER_ID (" + targetId + ") 無效、被刪除或無權限。");
+    throw new Error("❌ Folder Access Failed: ID (" + targetId + ") is invalid or missing.");
   }
 }
 
 function uploadFile(data) {
   try {
     const folder = getOrCreateFolder();
+    // Filename is provided by frontend (already timestamped there)
     const blob = Utilities.newBlob(Utilities.base64Decode(data.data), data.mimeType, data.fileName);
     const file = folder.createFile(blob);
     
@@ -90,17 +86,17 @@ function uploadFile(data) {
 
 /**
  * Gets list of Files grouped by Student Paper
- * Clean Version: No Logs, No Leaks, Fast Performance.
+ * Clean Version: Robust Search, Solution Linking, No Logs
  */
 function getDriveFiles() {
   try {
     const folder = getOrCreateFolder(); 
     
-    // Efficient search to find latest files
+    // Efficient search to find latest files instantly
     const files = folder.searchFiles("trashed = false");
     const allFiles = [];
 
-    // 1. Collect all files (Convert Date to Number for safety)
+    // 1. Collect all files (Convert Date to Number for transfer safety)
     while (files.hasNext()) {
       const file = files.next();
       allFiles.push({
@@ -114,10 +110,10 @@ function getDriveFiles() {
 
     if (allFiles.length === 0) return [];
 
-    // 2. Sort newest first
+    // 2. Sort Newest First (Critical for Version Control)
     allFiles.sort((a, b) => b.created - a.created); 
 
-    // 3. Group Parents and Children
+    // 3. Group Parents, Children, and Solutions
     const fileMap = {};
     
     allFiles.forEach(file => {
@@ -126,32 +122,37 @@ function getDriveFiles() {
       
       const isReport = name.includes("_Report_") && type === "application/pdf";
       const isCsv = name.includes("_Grades_") && (type === "text/csv" || type === "application/vnd.ms-excel");
-      
-      let baseName;
+      const isSolution = name.includes(" (Solution)"); 
+
+      let baseName = name.replace(/\.[^/.]+$/, ""); // Remove extension
+
+      // Normalize Base Name (Strip suffixes to find the Parent)
+      if (isReport) baseName = baseName.split("_Report_")[0];
+      else if (isCsv) baseName = baseName.split("_Grades_")[0];
+      else if (isSolution) baseName = baseName.split(" (Solution)")[0];
+
+      if (!fileMap[baseName]) {
+        fileMap[baseName] = { children: [], solution: null, parent: null };
+      }
+
+      const entry = {
+        ...file,
+        displayDate: formatDate(new Date(file.created))
+      };
 
       if (isReport || isCsv) {
-        // Child File
-        const separator = isReport ? "_Report_" : "_Grades_";
-        baseName = name.split(separator)[0];
-        
-        if (!fileMap[baseName]) fileMap[baseName] = { children: [] };
-        
-        fileMap[baseName].children.push({
-          ...file,
-          type: isReport ? 'PDF Report' : 'CSV Grades',
-          displayDate: formatDate(new Date(file.created))
-        });
-      } else {
-        // Parent File
-        baseName = name.replace(/\.[^/.]+$/, ""); 
-        
-        if (!fileMap[baseName]) fileMap[baseName] = { children: [] };
-        
+        fileMap[baseName].children.push(entry);
+      } 
+      else if (isSolution) {
+        // Only keep the newest solution (First one found due to sort)
+        if (!fileMap[baseName].solution) {
+            fileMap[baseName].solution = entry;
+        }
+      } 
+      else {
+        // Only keep the newest Student Paper
         if (!fileMap[baseName].parent) {
-          fileMap[baseName].parent = {
-            ...file,
-            displayDate: formatDate(new Date(file.created))
-          };
+            fileMap[baseName].parent = entry;
         }
       }
     });
@@ -162,22 +163,30 @@ function getDriveFiles() {
       const item = fileMap[key];
       
       if (item.parent) {
+        // Normal Case: Student Paper Exists
         result.push({
           ...item.parent,
+          solution: item.solution,
           generatedFiles: item.children
         });
-      } else if (item.children.length > 0) {
+      } else if (item.children.length > 0 || item.solution) {
+        // Orphan Case: Source missing, but has reports/solution
+        const representative = item.children[0] || item.solution;
         result.push({
-          id: item.children[0].id,
+          id: representative.id,
           name: key + " [Source File Missing]",
           url: "#",
           mimeType: "application/pdf", 
-          displayDate: item.children[0].displayDate,
+          displayDate: representative.displayDate,
           generatedFiles: item.children,
+          solution: item.solution,
           isOrphan: true 
         });
       }
     });
+
+    // Final Sort by Creation Date (Newest groups at top)
+    result.sort((a, b) => b.created - a.created);
 
     return result;
 
@@ -386,7 +395,7 @@ function callPoeAPI(studentImages, solutionImages, studentIndex, modelName) {
     return gradeData;
     
   } catch (e) {
-    console.error("Critical Error in callPoeAPI:", e);
+    // console.error("Critical Error in callPoeAPI:", e); // Removed for cleanliness
     return { error: "Connection Failed. Details: " + e.toString() };
   }
 }
