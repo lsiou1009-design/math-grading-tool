@@ -25,13 +25,13 @@
     }
 
     // ==========================================
-    // FILE UPLOAD HANDLING (FIXED: Uploads Solution too)
+    // FILE UPLOAD HANDLING (Timestamp & Grouping Fix)
     // ==========================================
     async function handleUpload() {
         const studentFile = document.getElementById('studentFile').files[0];
         const solutionFile = document.getElementById('solutionFile').files[0];
         const statusDiv = document.getElementById('uploadStatus');
-        const ppsInput = document.getElementById('pagesPerStudent');
+        const ppsInput = document.getElementById('pagesPerStudent').value;
 
         if (!studentFile) {
             statusDiv.textContent = "Please select a Student PDF.";
@@ -40,24 +40,41 @@
 
         statusDiv.textContent = "Reading files...";
 
-        // 1. Read Student PDF into memory
+        // 1. Generate Unique Name (Timestamp) to prevent collisions
+        const now = new Date();
+        const timeStr = now.getFullYear().toString() +
+            (now.getMonth() + 1).toString().padStart(2, '0') +
+            now.getDate().toString().padStart(2, '0') + "-" +
+            now.getHours().toString().padStart(2, '0') +
+            now.getMinutes().toString().padStart(2, '0') +
+            now.getSeconds().toString().padStart(2, '0');
+
+        const originalBase = studentFile.name.replace(/\.[^/.]+$/, "");
+        const extension = studentFile.name.split('.').pop();
+        
+        // Create the Unique Base Name that links Student & Solution
+        const uniqueBaseName = `${originalBase}_${timeStr}`;
+        
+        const finalStudentName = `${uniqueBaseName}.${extension}`;
+        const finalSolutionName = `${uniqueBaseName} (Solution).${extension}`;
+
+        // 2. Read Student PDF into memory
         const rawBuffer = await studentFile.arrayBuffer();
         masterPdfBytes = new Uint8Array(rawBuffer);
 
-        // 1b. Calculate Total Students automatically
+        // 2b. Calculate Total Students automatically
         try {
             const loadingTask = pdfjsLib.getDocument({ data: masterPdfBytes.slice() });
             const pdf = await loadingTask.promise;
             const totalPages = pdf.numPages;
-            const pps = parseInt(ppsInput.value) || 1;
+            const pps = parseInt(ppsInput) || 1;
             const calculatedStudents = Math.floor(totalPages / pps);
             document.getElementById('totalStudents').value = calculatedStudents;
-            console.log(`PDF loaded: ${totalPages} pages. Est. Students: ${calculatedStudents}`);
         } catch (e) {
             console.error("Error counting pages:", e);
         }
 
-        // 2. Read Solution PDF (if provided)
+        // 3. Process Solution PDF (if provided)
         if (solutionFile) {
             statusDiv.textContent = "Processing Solution Key...";
             const solutionBytes = await solutionFile.arrayBuffer();
@@ -67,14 +84,14 @@
             solutionImagesBase64 = [];
         }
 
-        // 3. Upload Files to Drive (Sequential)
+        // 4. Upload Files to Drive (Sequential with Unique Names)
         statusDiv.textContent = "Uploading Student PDF to Drive...";
         const reader = new FileReader();
         
         reader.onload = function (e) {
             const studentData = {
                 data: e.target.result.split(',')[1],
-                fileName: studentFile.name,
+                fileName: finalStudentName, // <--- Unique Name
                 mimeType: studentFile.type
             };
             
@@ -89,7 +106,7 @@
                              solReader.onload = function(evt) {
                                  const solData = {
                                      data: evt.target.result.split(',')[1],
-                                     fileName: solutionFile.name,
+                                     fileName: finalSolutionName, // <--- Linked Unique Name
                                      mimeType: solutionFile.type
                                  };
                                  google.script.run
@@ -97,8 +114,9 @@
                                          statusDiv.textContent = "All Files Uploaded!";
                                          setTimeout(() => {
                                              loadFiles(); // Refresh dashboard
-                                             openGrading(res.url, res.fileId, res.name, true);
-                                         }, 2000);
+                                             // Pass null for ID because we have solution in memory
+                                             openGrading(res.url, res.fileId, res.name, null, true);
+                                         }, 1500);
                                      })
                                      .uploadFile(solData);
                              };
@@ -107,9 +125,9 @@
                             // No solution file, just finish
                             statusDiv.textContent = "Upload Complete!";
                             setTimeout(() => {
-                                loadFiles(); // Refresh dashboard
-                                openGrading(res.url, res.fileId, res.name, true);
-                            }, 2000);
+                                loadFiles(); 
+                                openGrading(res.url, res.fileId, res.name, null, true);
+                            }, 1500);
                         }
                     } else {
                         statusDiv.textContent = "Error: " + res.error;
@@ -123,8 +141,8 @@
         reader.readAsDataURL(studentFile);
     }
 
-   // ==========================================
-    // DASHBOARD LOGIC (CLEAN)
+    // ==========================================
+    // DASHBOARD LOGIC (Clean & Solution Aware)
     // ==========================================
     function loadFiles() {
         const list = document.getElementById('fileList');
@@ -133,12 +151,10 @@
         google.script.run
             .withSuccessHandler(function (files) {
                 list.innerHTML = "";
-                
                 if (!files || files.length === 0) {
                     list.innerHTML = "<p>No files found.</p>";
                     return;
                 }
-                
                 files.forEach(file => {
                     // Card Container
                     const item = document.createElement('div');
@@ -160,22 +176,33 @@
                     dateEl.style.fontSize = '0.85em';
                     dateEl.style.marginBottom = '10px';
 
+                    // Solution Badge
+                    if (file.solution) {
+                        const solBadge = document.createElement('div');
+                        solBadge.innerHTML = `✅ Solution Key Linked`;
+                        solBadge.style.color = '#059669';
+                        solBadge.style.fontSize = '0.8rem';
+                        solBadge.style.marginBottom = '5px';
+                        item.appendChild(solBadge);
+                    }
+
                     // Grade Button
                     const gradeBtn = document.createElement('button');
-                    if (file.isOrphan) {
-                        gradeBtn.textContent = '⚠️ Source Missing';
-                        gradeBtn.className = 'secondary-btn';
-                        gradeBtn.disabled = true;
-                    } else {
-                        gradeBtn.textContent = '📝 Grade This Paper';
-                        gradeBtn.className = 'primary-btn';
-                        gradeBtn.onclick = () => openGrading(file.url, file.id, file.name);
-                    }
+                    gradeBtn.className = file.isOrphan ? 'secondary-btn' : 'primary-btn';
+                    gradeBtn.textContent = file.isOrphan ? '⚠️ Source Missing' : '📝 Grade This Paper';
                     gradeBtn.style.width = '100%';
                     gradeBtn.style.padding = '8px';
+                    
+                    if (!file.isOrphan) {
+                        const solId = file.solution ? file.solution.id : null;
+                        gradeBtn.onclick = () => openGrading(file.url, file.id, file.name, solId);
+                    } else {
+                        gradeBtn.disabled = true;
+                    }
 
                     item.appendChild(nameEl);
                     item.appendChild(dateEl);
+                    if(file.solution) item.appendChild(document.createElement('br'));
                     item.appendChild(gradeBtn);
 
                     // Generated Reports Section
@@ -216,6 +243,7 @@
                             link.style.border = '1px solid #e5e7eb';
                             link.style.fontSize = '0.8rem';
 
+                            // Icon based on type
                             const icon = report.type.includes('PDF') ? '📄' : '📊';
                             
                             link.innerHTML = `
@@ -223,6 +251,7 @@
                                 <span style="color:#9ca3af; font-size:0.75rem;">${report.displayDate}</span>
                             `;
                             
+                            // Hover effect
                             link.onmouseover = () => link.style.background = '#f3f4f6';
                             link.onmouseout = () => link.style.background = '#f9fafb';
                             
@@ -239,19 +268,20 @@
             })
             .getDriveFiles();
     }
-    
+
     // ==========================================
     // GRADING VIEW & PDF RENDERING
     // ==========================================
-    function openGrading(url, id, name, isNewUpload = false) {
+    function openGrading(url, id, name, solutionId = null, isNewUpload = false) {
         currentFileId = id;
-        currentFileName = name; // Store name for report generation
+        currentFileName = name; 
         const inputVal = document.getElementById('pagesPerStudent').value;
         pagesPerStudent = parseInt(inputVal) || 1;
         
         currentStudentIndex = 1;
         showTab('grading');
         
+        // Load Student PDF
         if (!isNewUpload) {
             const statusDiv = document.getElementById('gradeStatus');
             statusDiv.textContent = "Loading PDF from Drive...";
@@ -264,7 +294,7 @@
                             bytes[i] = binaryString.charCodeAt(i);
                         }
                         masterPdfBytes = bytes;
-                        statusDiv.textContent = "PDF Loaded.";
+                        statusDiv.textContent = ""; // Clear status
                         
                         pdfjsLib.getDocument({ data: masterPdfBytes.slice() }).promise.then(pdf => {
                             const total = Math.floor(pdf.numPages / pagesPerStudent);
@@ -280,6 +310,27 @@
             // New upload, bytes are ready
             updateStudentView();
         }
+
+        // Fetch Linked Solution from Drive if needed
+        if (solutionId && !isNewUpload) {
+            const statusDiv = document.getElementById('gradeStatus');
+            statusDiv.textContent = "Loading Solution Key...";
+            
+            google.script.run
+                .withSuccessHandler(async function(res) {
+                    if (res.success) {
+                        const binaryString = atob(res.data);
+                        const bytes = new Uint8Array(binaryString.length);
+                        solutionImagesBase64 = await convertPdfToImages(bytes);
+                        statusDiv.textContent = "Solution Key Loaded.";
+                        setTimeout(() => statusDiv.textContent = "", 2000);
+                    }
+                })
+                .getFileContent(solutionId);
+        } else if (!solutionId && !isNewUpload) {
+            // No solution linked
+            solutionImagesBase64 = [];
+        }
     }
 
     // Render Student Pages directly to Canvas
@@ -288,8 +339,7 @@
         const startPage = (currentStudentIndex - 1) * pagesPerStudent + 1;
         const endPage = startPage + pagesPerStudent - 1;
         document.getElementById('pageGuide').textContent = `Pages ${startPage}-${endPage}`;
-        document.getElementById('gradeStatus').textContent = "";
-
+        
         const container = document.getElementById('pdfContainer');
         container.innerHTML = ""; // Clear previous pages
 
@@ -395,23 +445,20 @@
     }
 
     // ==========================================
-    // INTELLIGENT GRADING LOGIC (FIXED)
+    // INTELLIGENT GRADING LOGIC
     // ==========================================
     
-    // Helper: Detect "Blank" strictly based on score AND keywords
     function isBlankAnswer(q) {
         if (!q.score) return true;
         const scoreVal = parseFloat(q.score.split('/')[0]) || 0;
         const comment = (q.comment || "").toLowerCase();
         
-        // It's a blank if Score is 0 AND comment explicitly says it's blank/missing
         if (scoreVal === 0 && (comment.includes("blank") || comment.includes("missing") || comment.includes("未作答"))) {
             return true;
         }
         return false;
     }
 
-    // Helper: Extract numeric score
     function getScoreValue(scoreStr) {
         if (!scoreStr) return 0;
         return parseFloat(scoreStr.split('/')[0]) || 0;
@@ -434,14 +481,12 @@
         try {
             statusDiv.textContent = `Grading Student ${currentStudentIndex}...`;
             
-            // Prepare Student Content
             const studentPdfBase64 = await extractStudentPdfBase64(currentStudentIndex);
             const binaryString = atob(studentPdfBase64);
             const bytes = new Uint8Array(binaryString.length);
             for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
             const allImages = await convertPdfToImages(bytes);
             
-            // Chunking - 5 PAGES PER REQUEST
             const CHUNK_SIZE = 5;
             const totalChunks = Math.ceil(allImages.length / CHUNK_SIZE);
             
@@ -470,17 +515,14 @@
                     
                     if (chunkData.questions) {
                         chunkData.questions.forEach(newQ => {
-                            // Normalize ID (remove spaces, uppercase)
                             const newId = newQ.id.replace(/\s+/g, '').toUpperCase();
                             const existingIndex = mergedResult.questions.findIndex(q => 
                                 q.id.replace(/\s+/g, '').toUpperCase() === newId
                             );
 
                             if (existingIndex === -1) {
-                                // New Question found
                                 mergedResult.questions.push(newQ);
                             } else {
-                                // Conflict Resolution: Smart Merge
                                 const existingQ = mergedResult.questions[existingIndex];
                                 
                                 const newIsBlank = isBlankAnswer(newQ);
@@ -489,17 +531,13 @@
                                 const oldScore = getScoreValue(existingQ.score);
 
                                 if (!newIsBlank && oldIsBlank) {
-                                    // Found actual work in this chunk -> Overwrite the "Blank" from previous chunk
                                     mergedResult.questions[existingIndex] = newQ;
                                 } else if (newIsBlank && !oldIsBlank) {
-                                    // Already found work -> Ignore this "Blank"
                                     console.log(`Ignoring blank result for ${newId} from chunk ${i+1}`);
                                 } else {
-                                    // Both Real or Both Blank -> Keep Higher Score (benefit of doubt)
                                     if (newScore > oldScore) {
                                         mergedResult.questions[existingIndex] = newQ;
                                     } 
-                                    // Combine comments if not blank
                                     else if (!newIsBlank && !oldIsBlank && newQ.comment !== existingQ.comment) {
                                          mergedResult.questions[existingIndex].comment += ` | ${newQ.comment}`;
                                     }
@@ -510,14 +548,12 @@
                 }
             }
 
-            // Sort questions numerically (Handles Non-Chronological Grading)
             mergedResult.questions.sort((a, b) => {
                 const numA = parseInt(a.id.replace(/\D/g, '')) || 0;
                 const numB = parseInt(b.id.replace(/\D/g, '')) || 0;
                 return numA - numB;
             });
 
-            // Calculate Totals locally (Prevents hallucinated totals)
             let finalObtained = 0;
             let finalTotal = 0;
             let hasDenom = false;
@@ -544,10 +580,8 @@
                 btn.disabled = false;
             }
 
-            // Save Grade to Sheet
             google.script.run.saveGrade(mergedResult.student_name, finalScoreStr, finalCommentStr);
             
-            // Store for Export
             const gradeRecord = {
                 student_name: mergedResult.student_name,
                 total_score: finalScoreStr,
@@ -569,7 +603,6 @@
         }
     }
 
-    // Batch Grading Loop
     async function gradeAll() {
         const total = parseInt(document.getElementById('totalStudents').value) || 1;
         const statusDiv = document.getElementById('gradeStatus');
@@ -600,7 +633,6 @@
     function downloadCsv() {
         if (allGrades.length === 0) { alert("No grades available."); return; }
         
-        // Collect all unique Question IDs
         let qKeys = new Set();
         allGrades.forEach(g => { if (g.questions) g.questions.forEach(q => qKeys.add(q.id)); });
         const qHeaders = Array.from(qKeys).sort((a, b) => {
@@ -609,7 +641,6 @@
              return numA - numB;
         });
 
-        // Create CSV Content
         let csv = "\uFEFFStudent,Total Score," + qHeaders.map(h => `${h} Score`).join(",") + "\n";
         
         allGrades.forEach(g => {
@@ -622,7 +653,6 @@
             csv += row + "\n";
         });
         
-        // Save to Dashboard
         const statusDiv = document.getElementById('gradeStatus');
         statusDiv.textContent = "Saving CSV to Dashboard...";
         
