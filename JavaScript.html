@@ -123,26 +123,22 @@
         reader.readAsDataURL(studentFile);
     }
 
-    // ==========================================
-    // DASHBOARD LOGIC (FIXED: Added Debug Alerts)
+   // ==========================================
+    // DASHBOARD LOGIC (CLEAN)
     // ==========================================
     function loadFiles() {
         const list = document.getElementById('fileList');
         list.innerHTML = "<div class='spinner'></div> Loading files...";
         
-        // DEBUG STAGE 1
-        alert("Stage 1: Sending request to Google Server...");
-
         google.script.run
             .withSuccessHandler(function (files) {
-                // DEBUG STAGE 2
-                alert("Stage 2: Success! Server returned " + (files ? files.length : 0) + " files.");
-
                 list.innerHTML = "";
+                
                 if (!files || files.length === 0) {
-                    list.innerHTML = "<p>Server says no files found (No files found).</p>";
+                    list.innerHTML = "<p>No files found.</p>";
                     return;
                 }
+                
                 files.forEach(file => {
                     // Card Container
                     const item = document.createElement('div');
@@ -182,7 +178,7 @@
                     item.appendChild(dateEl);
                     item.appendChild(gradeBtn);
 
-                    // Generated Reports Section (Children Files)
+                    // Generated Reports Section
                     if (file.generatedFiles && file.generatedFiles.length > 0) {
                         const divider = document.createElement('hr');
                         divider.style.border = '0';
@@ -220,7 +216,6 @@
                             link.style.border = '1px solid #e5e7eb';
                             link.style.fontSize = '0.8rem';
 
-                            // Icon based on type
                             const icon = report.type.includes('PDF') ? '📄' : '📊';
                             
                             link.innerHTML = `
@@ -228,7 +223,6 @@
                                 <span style="color:#9ca3af; font-size:0.75rem;">${report.displayDate}</span>
                             `;
                             
-                            // Hover effect
                             link.onmouseover = () => link.style.background = '#f3f4f6';
                             link.onmouseout = () => link.style.background = '#f9fafb';
                             
@@ -241,13 +235,11 @@
                 });
             })
             .withFailureHandler(function(error) {
-                // DEBUG STAGE 3
-                alert("Stage 3: Failed! (Failure Handler Triggered)\n\nError: " + error.message);
                 list.innerHTML = `<p style="color:red; font-weight:bold;">Error loading files: ${error.message}</p>`;
             })
             .getDriveFiles();
     }
-
+    
     // ==========================================
     // GRADING VIEW & PDF RENDERING
     // ==========================================
